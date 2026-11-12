@@ -1,7 +1,9 @@
+pub mod acl;
 pub mod audit;
 pub mod channels;
 pub mod invites;
 pub mod models;
+pub mod ops;
 pub mod organizations;
 pub mod roles;
 pub mod sessions;

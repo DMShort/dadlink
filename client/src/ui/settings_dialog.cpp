@@ -1,4 +1,12 @@
 #include "settings_dialog.h"
+#include <algorithm>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QSpinBox>
+#include <QSlider>
+#include "ui/overlay/talk_overlay.h"
+#include <QGuiApplication>
+#include <QScreen>
 #include "audio/audio_engine.h"
 #include "input/ptt_manager.h"
 #include "ui/channel_tree.h"
@@ -41,6 +49,16 @@ void SettingsDialog::setupUi() {
     m_tabs->addTab(createHotkeyTab(), "Hotkeys");
     m_tabs->addTab(createChannelAudioTab(), "Channel Audio");
     m_tabs->addTab(createNetworkTab(), "Network");
+    const int overlayTab = m_tabs->addTab(createOverlayTab(), "Overlay");
+
+    // Preview the overlay while its tab is showing; always switch preview off on close
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this, overlayTab](int idx) {
+        if (m_overlay) m_overlay->setPreview(idx == overlayTab);
+    });
+    connect(this, &QDialog::finished, this, [this]() {
+        if (m_overlay) m_overlay->setPreview(false);
+        m_config.save();
+    });
     mainLayout->addWidget(m_tabs);
 
     auto* buttons = new QDialogButtonBox(
@@ -245,6 +263,14 @@ QWidget* SettingsDialog::createHotkeyTab() {
                     ++it;
             }
             m_config.hotkeys[key] = channelId;
+
+            // Op net: remember the binding by net name for future ops
+            if (m_opNetNames.contains(channelId)) {
+                for (auto it = m_config.opNetHotkeys.begin(); it != m_config.opNetHotkeys.end(); ) {
+                    if (it.value() == key) it = m_config.opNetHotkeys.erase(it); else ++it;
+                }
+                m_config.opNetHotkeys[m_opNetNames.value(channelId).toLower()] = key;
+            }
             loadHotkeyTable();
         });
         connect(m_pttManager, &PttManager::captureCancelled, this, [this]() { finishCapture(); });
@@ -521,6 +547,9 @@ void SettingsDialog::loadHotkeyTable() {
 
         connect(removeBtn, &QPushButton::clicked, this, [this, binding, channelId]() {
             m_config.hotkeys.remove(binding);
+            if (m_opNetNames.contains(channelId)) {
+                m_config.opNetHotkeys.remove(m_opNetNames.value(channelId).toLower());
+            }
             if (m_pttManager) {
                 m_pttManager->removeHotkey(channelId);
             }
@@ -540,6 +569,92 @@ void SettingsDialog::updateJoystickStatus() {
     int n = m_pttManager ? m_pttManager->joystickCount() : 0;
     m_joystickStatus->setText(n == 0 ? QStringLiteral("No joysticks detected")
                                      : QStringLiteral("%1 joystick/HOTAS device%2 detected").arg(n).arg(n == 1 ? "" : "s"));
+}
+
+QWidget* SettingsDialog::createOverlayTab() {
+    auto* widget = new QWidget(this);
+    auto* layout = new QVBoxLayout(widget);
+
+    auto* info = new QLabel(
+        "Shows who is talking, and on which net, on top of your game. It never takes clicks or focus. "
+        "<b>Star Citizen must be in Borderless or Windowed mode</b>: exclusive fullscreen draws over "
+        "every other window. Changes apply immediately; the overlay shows a preview while this tab is open.", this);
+    info->setWordWrap(true);
+    info->setStyleSheet("padding: 4px; color: #ccc;");
+    layout->addWidget(info);
+
+    auto* group = new QGroupBox("Overlay", this);
+    auto* form = new QFormLayout(group);
+    OverlayConfig& c = m_config.overlay;
+
+    auto* enabled = new QCheckBox("Show overlay", this);
+    enabled->setChecked(c.enabled);
+    form->addRow(enabled);
+
+    auto* corner = new QComboBox(this);
+    corner->addItem("Top left", "top-left");
+    corner->addItem("Top right", "top-right");
+    corner->addItem("Bottom left", "bottom-left");
+    corner->addItem("Bottom right", "bottom-right");
+    corner->setCurrentIndex(std::max(0, corner->findData(c.corner)));
+    form->addRow("Corner:", corner);
+
+    auto* screen = new QComboBox(this);
+    const auto screens = QGuiApplication::screens();
+    for (int i = 0; i < screens.size(); ++i) {
+        QRect g = screens[i]->geometry();
+        screen->addItem(QString("%1: %2 (%3×%4)").arg(i + 1).arg(screens[i]->name()).arg(g.width()).arg(g.height()), i);
+    }
+    screen->setCurrentIndex(std::clamp(c.screen, 0, std::max(0, int(screens.size()) - 1)));
+    form->addRow("Monitor:", screen);
+
+    auto* offX = new QSpinBox(this);
+    offX->setRange(0, 4000);
+    offX->setValue(c.offsetX);
+    offX->setSuffix(" px");
+    auto* offY = new QSpinBox(this);
+    offY->setRange(0, 4000);
+    offY->setValue(c.offsetY);
+    offY->setSuffix(" px");
+    auto* offRow = new QHBoxLayout();
+    offRow->addWidget(new QLabel("Across", this));
+    offRow->addWidget(offX);
+    offRow->addWidget(new QLabel("Down/up", this));
+    offRow->addWidget(offY);
+    form->addRow("Offset from corner:", offRow);
+
+    auto* scale = new QSlider(Qt::Horizontal, this);
+    scale->setRange(75, 200);
+    scale->setValue(int(c.scale * 100));
+    form->addRow("Size:", scale);
+
+    auto* opacity = new QSlider(Qt::Horizontal, this);
+    opacity->setRange(30, 100);
+    opacity->setValue(int(c.opacity * 100));
+    form->addRow("Opacity:", opacity);
+
+    auto* idle = new QCheckBox("Show a small tag when nobody is talking", this);
+    idle->setChecked(c.showIdle);
+    form->addRow(idle);
+
+    layout->addWidget(group);
+    layout->addStretch();
+
+    connect(enabled, &QCheckBox::toggled, this, [this](bool v) { m_config.overlay.enabled = v; applyOverlay(); });
+    connect(corner, &QComboBox::currentIndexChanged, this, [this, corner](int) {
+        m_config.overlay.corner = corner->currentData().toString(); applyOverlay(); });
+    connect(screen, &QComboBox::currentIndexChanged, this, [this, screen](int) {
+        m_config.overlay.screen = screen->currentData().toInt(); applyOverlay(); });
+    connect(offX, &QSpinBox::valueChanged, this, [this](int v) { m_config.overlay.offsetX = v; applyOverlay(); });
+    connect(offY, &QSpinBox::valueChanged, this, [this](int v) { m_config.overlay.offsetY = v; applyOverlay(); });
+    connect(scale, &QSlider::valueChanged, this, [this](int v) { m_config.overlay.scale = v / 100.0; applyOverlay(); });
+    connect(opacity, &QSlider::valueChanged, this, [this](int v) { m_config.overlay.opacity = v / 100.0; applyOverlay(); });
+    connect(idle, &QCheckBox::toggled, this, [this](bool v) { m_config.overlay.showIdle = v; applyOverlay(); });
+    return widget;
+}
+
+void SettingsDialog::applyOverlay() {
+    if (m_overlay) m_overlay->applyConfig(m_config.overlay);
 }
 
 void SettingsDialog::saveToConfig() {

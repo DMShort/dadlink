@@ -59,7 +59,11 @@ async fn handle_connection(socket: WebSocket, state: AppState, remote_ip: String
 
     // Send challenge
     let challenge = Envelope::new("challenge", &ChallengePayload {
-        methods: vec!["password".into(), "token".into()],
+        methods: if state.config.discord.enabled() {
+            vec!["password".into(), "token".into(), "discord".into()]
+        } else {
+            vec!["password".into(), "token".into()]
+        },
     });
     if ws_sink.send(Message::Text(challenge.to_json())).await.is_err() {
         return;
@@ -233,6 +237,7 @@ async fn handle_authenticate(
             )
             .await
         }
+        "discord" => authenticate_discord(&state.pool, auth.token.as_deref().unwrap_or(""), &auth.org_tag).await,
         _ => {
             let _ = tx.send(Envelope::new("auth_failed", &AuthFailedPayload {
                 reason: "Unknown authentication method".into(),
@@ -318,6 +323,16 @@ async fn handle_authenticate(
             super::metrics::metrics().total_auth_successes.inc();
             info!("User '{}' authenticated (id={})", user.username, user.id);
 
+            let role_perms = db::roles::get_user_permissions(&state.pool, user.id)
+                .await
+                .unwrap_or_default();
+            let is_admin = user.is_admin.unwrap_or(false);
+            let permissions = if is_admin {
+                0x1FF
+            } else {
+                crate::auth::permissions::compute_permissions(&role_perms)
+            };
+
             // Send auth success
             let _ = tx.send(Envelope::new("auth_success", &AuthSuccessPayload {
                 user_id: user.id,
@@ -325,9 +340,14 @@ async fn handle_authenticate(
                 voice_port: state.config.server.voice_port,
                 channels: channel_infos,
                 users: online_users,
+                is_admin,
+                permissions,
                 client_version: state.config.server.client_version.clone(),
                 client_download_url: state.config.server.client_download_url.clone(),
             }).to_json());
+
+            // Ops already running in the org, personalised to this user's roles
+            super::admin::ops::send_active_ops(state, user.id, org_id).await;
 
         }
         Err(reason) => {
@@ -366,6 +386,34 @@ async fn authenticate_password(
     // Get role IDs
     let role_ids = get_user_role_ids(pool, user.id).await;
 
+    Ok((user.clone(), user.org_id, role_ids))
+}
+
+/// Single-use ticket from the Discord browser login (see server/discord.rs).
+async fn authenticate_discord(
+    pool: &sqlx::PgPool,
+    ticket: &str,
+    org_tag: &str,
+) -> Result<(db::models::User, i32, Vec<i32>), String> {
+    let user_id = super::discord::redeem_ticket(ticket)
+        .ok_or_else(|| "Discord login expired or already used. Please try again.".to_string())?;
+    let user = db::users::find_by_id(pool, user_id)
+        .await
+        .map_err(|_| "Internal error".to_string())?
+        .ok_or_else(|| "Account not found".to_string())?;
+    if !user.is_active.unwrap_or(true) {
+        return Err("Account is disabled".to_string());
+    }
+    // The ticket was issued for a specific org; make sure the client is logging into that one
+    let (tag,): (String,) = sqlx::query_as("SELECT tag FROM organizations WHERE id = $1")
+        .bind(user.org_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| "Internal error".to_string())?;
+    if !org_tag.is_empty() && !tag.eq_ignore_ascii_case(org_tag) {
+        return Err("This Discord login was for a different organisation".to_string());
+    }
+    let role_ids = get_user_role_ids(pool, user.id).await;
     Ok((user.clone(), user.org_id, role_ids))
 }
 
@@ -448,11 +496,26 @@ async fn handle_join_channel(
         }
     }
 
+    // Channel ACL (per-role join/speak; channels without ACL rows stay open)
+    let access = match db::acl::channel_access(&state.pool, join.channel_id, user_id).await {
+        Ok(a) => a,
+        Err(e) => {
+            warn!("ACL lookup failed for channel {}: {}", join.channel_id, e);
+            let _ = tx.send(make_error("internal", "Could not check channel access"));
+            return;
+        }
+    };
+    if !access.can_join {
+        let _ = tx.send(make_error("forbidden", "You don't have access to this channel"));
+        return;
+    }
+
     // Try to join (checks max_users)
     if let Err(_) = state.channel_manager.join(join.channel_id, user_id) {
         let _ = tx.send(make_error("channel_full", "Channel is full"));
         return;
     }
+    state.channel_manager.set_can_speak(join.channel_id, user_id, access.can_speak);
 
     // Track in connection manager
     state.connection_manager.add_channel(user_id, join.channel_id);
@@ -464,6 +527,7 @@ async fn handle_join_channel(
     let _ = tx.send(Envelope::new("channel_joined", &ChannelJoinedPayload {
         channel_id: join.channel_id,
         roster: roster.clone(),
+        can_speak: access.can_speak,
     }).to_json());
 
     // Broadcast user_joined to other channel members
@@ -490,7 +554,10 @@ async fn handle_join_channel(
 
     // Initiate SRTP key exchange on the first channel join per connection.
     // Subsequent joins skip this — only the periodic rotation task re-keys.
-    if !conn.srtp_initialized {
+    // Also skip while one is already in flight: a client that joins several channels
+    // back-to-back (e.g. "Join op") would otherwise get a fresh init per join, the server's
+    // secret would be overwritten, and the two sides would derive different keys (silence).
+    if !conn.srtp_initialized && conn.ke_secret.is_none() {
         let (ke_secret, server_public) = key_exchange::generate_keypair();
         conn.ke_secret = Some(ke_secret);
         let _ = tx.send(Envelope::new("key_exchange_init", &KeyExchangeInitPayload {

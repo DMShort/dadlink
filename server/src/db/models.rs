@@ -50,6 +50,8 @@ pub struct Role {
     pub priority: Option<i32>,
     pub color: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
+    /// Discord role that grants this role on Discord login (role sync).
+    pub discord_role_id: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

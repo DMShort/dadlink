@@ -13,6 +13,8 @@ pub enum Permission {
     CanManageRoles = 32,
     CanViewAuditLog = 64,
     Admin = 128,
+    /// Create/edit op templates and start/end ops (without full admin rights).
+    OpLeader = 256,
 }
 
 impl Permission {
@@ -25,6 +27,7 @@ impl Permission {
         Permission::CanManageRoles,
         Permission::CanViewAuditLog,
         Permission::Admin,
+        Permission::OpLeader,
     ];
 }
 

@@ -17,6 +17,8 @@ pub struct CreateRoleRequest {
     pub permissions: i32,
     pub priority: Option<i32>,
     pub color: Option<String>,
+    /// Discord role id to sync from on Discord login ("" or absent = none)
+    pub discord_role_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -25,6 +27,29 @@ pub struct UpdateRoleRequest {
     pub permissions: Option<i32>,
     pub priority: Option<i32>,
     pub color: Option<String>,
+    /// Absent = unchanged, "" = clear
+    pub discord_role_id: Option<String>,
+}
+
+/// Set or clear a role's Discord role id. Discord ids are numeric snowflakes.
+fn validate_discord_role(value: &str) -> Result<(), axum::response::Response> {
+    let v = value.trim();
+    if !v.is_empty() && (v.len() > 32 || !v.bytes().all(|b| b.is_ascii_digit())) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error":
+            "Discord role ID must be the numeric ID (enable Developer Mode in Discord, right-click the role, Copy Role ID)"}))).into_response());
+    }
+    Ok(())
+}
+
+async fn set_discord_role(pool: &sqlx::PgPool, role_id: i32, value: &str) -> Result<(), String> {
+    let v = value.trim();
+    sqlx::query("UPDATE roles SET discord_role_id = NULLIF($2, '') WHERE id = $1")
+        .bind(role_id)
+        .bind(v)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub async fn list_roles(
@@ -54,6 +79,10 @@ pub async fn create_role(
             .into_response();
     }
 
+    if let Some(d) = &body.discord_role_id {
+        if let Err(r) = validate_discord_role(d) { return r; }
+    }
+
     match db::roles::create(
         &state.pool,
         auth.org_id,
@@ -64,7 +93,12 @@ pub async fn create_role(
     )
     .await
     {
-        Ok(role) => {
+        Ok(mut role) => {
+            if let Some(d) = &body.discord_role_id {
+                if set_discord_role(&state.pool, role.id, d).await.is_ok() {
+                    role.discord_role_id = Some(d.trim().to_string()).filter(|s| !s.is_empty());
+                }
+            }
             let _ = db::audit::log_action(
                 &state.pool,
                 auth.org_id,
@@ -135,8 +169,17 @@ pub async fn update_role(
     let priority = body.priority.unwrap_or(existing.priority.unwrap_or(0));
     let color = body.color.as_deref().or(existing.color.as_deref());
 
+    if let Some(d) = &body.discord_role_id {
+        if let Err(r) = validate_discord_role(d) { return r; }
+    }
+
     match db::roles::update(&state.pool, role_id, name, permissions, priority, color).await {
-        Ok(role) => {
+        Ok(mut role) => {
+            if let Some(d) = &body.discord_role_id {
+                if set_discord_role(&state.pool, role_id, d).await.is_ok() {
+                    role.discord_role_id = Some(d.trim().to_string()).filter(|s| !s.is_empty());
+                }
+            }
             let _ = db::audit::log_action(
                 &state.pool,
                 auth.org_id,
