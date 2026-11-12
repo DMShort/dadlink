@@ -1,11 +1,12 @@
 #include "audio_engine.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
 AudioEngine::AudioEngine()
     : m_captureBuffer(std::make_unique<RingBuffer<float>>(SampleRate / 5))   // ~200ms
-    , m_playbackBuffer(std::make_unique<RingBuffer<float>>(SampleRate / 5))
+    , m_playbackBuffer(std::make_unique<RingBuffer<float>>(SampleRate / 5 * PlaybackChannels))
 {}
 
 AudioEngine::~AudioEngine() {
@@ -168,7 +169,7 @@ bool AudioEngine::startPlayback(int deviceId) {
     outputParams.device = resolveOutputDevice(deviceId);
     if (outputParams.device == paNoDevice) return false;
 
-    outputParams.channelCount = Channels;
+    outputParams.channelCount = PlaybackChannels;
     outputParams.sampleFormat = paFloat32;
     outputParams.suggestedLatency = Pa_GetDeviceInfo(outputParams.device)->defaultHighOutputLatency;
     outputParams.hostApiSpecificStreamInfo = nullptr;
@@ -176,15 +177,19 @@ bool AudioEngine::startPlayback(int deviceId) {
     m_playbackBuffer->reset();
 
     PaError err = Pa_OpenStream(
-        &m_playbackStream,
-        nullptr, // no input
-        &outputParams,
-        SampleRate,
-        FramesPerBuffer,
-        paClipOff,
-        playbackCallback,
-        this
-    );
+        &m_playbackStream, nullptr, &outputParams, SampleRate, FramesPerBuffer,
+        paClipOff, playbackCallback, this);
+    m_outputChannels = PlaybackChannels;
+
+    if (err != paNoError) {
+        // Some devices only accept mono — fall back and downmix in the callback
+        outputParams.channelCount = 1;
+        m_playbackStream = nullptr;
+        err = Pa_OpenStream(
+            &m_playbackStream, nullptr, &outputParams, SampleRate, FramesPerBuffer,
+            paClipOff, playbackCallback, this);
+        m_outputChannels = 1;
+    }
     if (err != paNoError) {
         m_lastError = std::string("Playback open failed (device ") +
                       std::to_string(outputParams.device) + "): " +
@@ -217,8 +222,12 @@ size_t AudioEngine::readCapture(float* buffer, size_t frames) {
     return m_captureBuffer->read(buffer, frames);
 }
 
-size_t AudioEngine::writePlayback(const float* buffer, size_t frames) {
-    return m_playbackBuffer->write(buffer, frames);
+size_t AudioEngine::writePlayback(const float* stereo, size_t frames) {
+    // Only ever write whole stereo frames so L/R can never swap
+    size_t maxFrames = m_playbackBuffer->availableWrite() / PlaybackChannels;
+    if (frames > maxFrames) frames = maxFrames;
+    if (frames == 0) return 0;
+    return m_playbackBuffer->write(stereo, frames * PlaybackChannels) / PlaybackChannels;
 }
 
 std::string AudioEngine::captureDeviceName() const {
@@ -271,22 +280,37 @@ int AudioEngine::playbackCallback(const void* /*input*/, void* output,
                                    PaStreamCallbackFlags /*statusFlags*/,
                                    void* userData) {
     auto* engine = static_cast<AudioEngine*>(userData);
-    auto* samples = static_cast<float*>(output);
-
-    size_t read = engine->m_playbackBuffer->read(samples, frameCount);
-
-    // Zero-fill if not enough data (silence)
-    if (read < frameCount) {
-        std::memset(samples + read, 0, (frameCount - read) * sizeof(float));
-    }
-
-    // Apply output volume and compute RMS
-    float volume = engine->m_outputVolume.load(std::memory_order_relaxed);
+    auto* out = static_cast<float*>(output);
+    const int outCh = engine->m_outputChannels;
+    const float volume = engine->m_outputVolume.load(std::memory_order_relaxed);
     float sumSquares = 0.0f;
 
-    for (unsigned long i = 0; i < frameCount; ++i) {
-        samples[i] *= volume;
-        sumSquares += samples[i] * samples[i];
+    if (outCh == PlaybackChannels) {
+        // Device is stereo: ring buffer layout matches output directly
+        size_t want = frameCount * PlaybackChannels;
+        size_t read = engine->m_playbackBuffer->read(out, want);
+        if (read < want) std::memset(out + read, 0, (want - read) * sizeof(float));
+        for (size_t i = 0; i < want; ++i) {
+            out[i] *= volume;
+            sumSquares += out[i] * out[i];
+        }
+        sumSquares /= PlaybackChannels;
+    } else {
+        // Mono fallback: downmix stereo pairs in fixed-size chunks (no allocation)
+        float chunk[FramesPerBuffer * PlaybackChannels];
+        unsigned long done = 0;
+        while (done < frameCount) {
+            unsigned long n = std::min<unsigned long>(frameCount - done, FramesPerBuffer);
+            size_t read = engine->m_playbackBuffer->read(chunk, n * PlaybackChannels);
+            if (read < n * PlaybackChannels)
+                std::memset(chunk + read, 0, (n * PlaybackChannels - read) * sizeof(float));
+            for (unsigned long f = 0; f < n; ++f) {
+                float s = 0.5f * (chunk[f * 2] + chunk[f * 2 + 1]) * volume;
+                out[done + f] = s;
+                sumSquares += s * s;
+            }
+            done += n;
+        }
     }
 
     float rms = std::sqrt(sumSquares / static_cast<float>(frameCount));

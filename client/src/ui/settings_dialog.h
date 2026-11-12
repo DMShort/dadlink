@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QTableWidget>
+#include <QPushButton>
 #include <QMap>
 
 #include "config/config.h"
@@ -45,6 +46,17 @@ private:
     QWidget* createAudioTab();
     QWidget* createVoiceTab();
     QWidget* createHotkeyTab();
+public:
+    /// channel_id -> net name for live op nets; PTT bound to these is also saved by net name
+    /// so it carries over to the same net in future ops.
+    void setOpNetNames(const QMap<int, QString>& names) { m_opNetNames = names; }
+    /// Overlay to preview/apply live from the Overlay tab.
+    void setOverlay(class TalkOverlay* overlay) { m_overlay = overlay; }
+private:
+    QWidget* createOverlayTab();
+    void applyOverlay();
+    class TalkOverlay* m_overlay = nullptr;
+    QMap<int, QString> m_opNetNames;
     QWidget* createChannelAudioTab();
     QWidget* createNetworkTab();
     void loadFromConfig();
@@ -52,7 +64,6 @@ private:
     void loadHotkeyTable();
     void loadChannelAudioTable();
 
-    static QString vkCodeToName(int vkCode);
 
     AppConfig& m_config;
     AudioEngine* m_audioEngine;
@@ -80,7 +91,10 @@ private:
     // Hotkey tab
     QTableWidget* m_hotkeyTable = nullptr;
     QComboBox* m_hotkeyChannelCombo = nullptr;
-    QComboBox* m_hotkeyKeyCombo = nullptr;
+    QPushButton* m_bindButton = nullptr;   // "Press to bind…" capture button
+    QLabel* m_joystickStatus = nullptr;    // "2 joysticks detected"
+    void updateJoystickStatus();
+    void finishCapture();
 
     // Channel Audio tab
     QTableWidget* m_channelAudioTable = nullptr;

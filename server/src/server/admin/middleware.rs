@@ -31,6 +31,33 @@ impl FromRequestParts<AppState> for AdminAuth {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        authenticate(parts, state, Permission::Admin, "Admin access required").await
+    }
+}
+
+/// Extractor for the ops API: allows admins and anyone with the OpLeader permission.
+#[derive(Debug, Clone)]
+pub struct OpLeaderAuth(pub AdminAuth);
+
+#[async_trait]
+impl FromRequestParts<AppState> for OpLeaderAuth {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        authenticate(parts, state, Permission::OpLeader, "Op Leader permission required")
+            .await
+            .map(OpLeaderAuth)
+    }
+}
+
+/// Validate the bearer token and session, then require `required` (Admin implies everything).
+async fn authenticate(
+    parts: &mut Parts,
+    state: &AppState,
+    required: Permission,
+    denied_message: &str,
+) -> Result<AdminAuth, Response> {
+    {
         // Get Authorization header
         let auth_header = parts
             .headers
@@ -113,11 +140,11 @@ impl FromRequestParts<AppState> for AdminAuth {
 
         let effective_perms = compute_permissions(&role_perms);
 
-        // Must have Admin permission or is_admin flag
-        if !is_admin && !has_permission(effective_perms, Permission::Admin) {
+        // Must have the required permission (Admin implies all) or the is_admin flag
+        if !is_admin && !has_permission(effective_perms, required) {
             return Err((
                 StatusCode::FORBIDDEN,
-                Json(json!({"error": "Admin access required"})),
+                Json(json!({"error": denied_message})),
             )
                 .into_response());
         }
@@ -136,7 +163,7 @@ impl FromRequestParts<AppState> for AdminAuth {
             user_id: claims.sub,
             org_id: claims.org,
             is_admin,
-            permissions: if is_admin { 0xFF } else { effective_perms },
+            permissions: if is_admin { 0x1FF } else { effective_perms },
         })
     }
 }

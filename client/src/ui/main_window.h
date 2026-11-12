@@ -6,6 +6,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSet>
+#include <QTimer>
 
 #include "config/config.h"
 #include "crypto/key_exchange.h"
@@ -18,6 +19,9 @@ class WebSocketClient;
 class ChannelTree;
 class UserList;
 class ActivityLog;
+class OpsManager;
+class TalkOverlay;
+class QFrame;
 class AdminPanel;
 class VuMeter;
 
@@ -61,7 +65,16 @@ private slots:
     void onDisconnectAction();
     void onPttStateChanged(bool active, int channelId);
 
+    // Ops
+    void onOpStarted(const QJsonObject& op);
+    void onOpEnded(int opId, const QString& name);
+
 private:
+    void joinOp(int opId);
+    void showOpBanner(const QJsonObject& op);
+    void refreshOverlay();
+    QString displayNameFor(int userId) const;
+    QString channelLabel(int channelId) const;
     void setupUi();
     void setupMenuBar();
     void setupStatusBar();
@@ -77,7 +90,7 @@ private:
     int m_voicePort;
 
     // Widgets
-    ChannelTree* m_channelTree;
+    ChannelTree* m_channelTree = nullptr;
     UserList* m_userList;
     ActivityLog* m_activityLog;
 
@@ -115,4 +128,20 @@ private:
     bool m_isAdmin = false;
     AdminApi m_adminApi;
     AdminPanel* m_adminPanel = nullptr;
+
+    // Ops
+    OpsManager* m_opsManager = nullptr;
+    QMap<int, QJsonObject> m_ops;          // op_id -> op (personalised view from server)
+    QMap<int, QString> m_opNetNames;       // channel_id -> net name, for live op nets
+    QSet<int> m_listenOnly;                // joined channels where we may not transmit
+    QFrame* m_opBanner = nullptr;
+    QLabel* m_opBannerText = nullptr;
+    QPushButton* m_opJoinBtn = nullptr;
+    int m_bannerOpId = -1;
+
+    // Overlay (top-level, no parent: it must stay visible while this window is minimised)
+    TalkOverlay* m_overlay = nullptr;
+    QTimer* m_overlayTimer = nullptr;
+    int m_txChannel = -1;        // channel we're transmitting on (-1 = not)
+    int m_listenOnlyPress = -1;  // listen-only channel PTT is being held for (-1 = none)
 };

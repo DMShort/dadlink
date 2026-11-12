@@ -19,13 +19,16 @@ struct AudioDeviceInfo {
 };
 
 /// Audio engine wrapping PortAudio.
-/// Provides input (capture) and output (playback) streams at 48kHz mono float32.
+/// Capture: 48kHz mono float32. Playback: 48kHz stereo float32 (interleaved L/R) so
+/// channels can be panned; falls back to a mono device stream (downmixed) if stereo
+/// can't be opened.
 /// Uses lock-free ring buffers for inter-thread communication.
 class AudioEngine {
 public:
     static constexpr int SampleRate = 48000;
     static constexpr int FramesPerBuffer = 960; // 20ms at 48kHz
-    static constexpr int Channels = 1;          // mono
+    static constexpr int Channels = 1;          // mono (capture + Opus)
+    static constexpr int PlaybackChannels = 2;  // stereo interleaved playback buffer
 
     AudioEngine();
     ~AudioEngine();
@@ -61,9 +64,12 @@ public:
     /// Returns number of samples actually read.
     size_t readCapture(float* buffer, size_t frames);
 
-    /// Write audio to the playback ring buffer.
-    /// Returns number of samples actually written.
-    size_t writePlayback(const float* buffer, size_t frames);
+    /// Write interleaved stereo audio (L,R,L,R…) to the playback ring buffer.
+    /// frames = number of stereo frames. Returns frames actually written.
+    size_t writePlayback(const float* stereo, size_t frames);
+
+    /// Channels the output device was actually opened with (2, or 1 on fallback).
+    int outputChannels() const { return m_outputChannels; }
 
     /// Input volume multiplier (0.0 - 1.0+). Atomic, safe from audio callback.
     void setInputVolume(float volume) { m_inputVolume.store(volume, std::memory_order_relaxed); }
@@ -112,7 +118,8 @@ private:
 
     // Ring buffers: ~200ms capacity (about 10 frames)
     std::unique_ptr<RingBuffer<float>> m_captureBuffer;
-    std::unique_ptr<RingBuffer<float>> m_playbackBuffer;
+    std::unique_ptr<RingBuffer<float>> m_playbackBuffer; // interleaved stereo
+    int m_outputChannels = PlaybackChannels;
 
     std::atomic<float> m_inputVolume{1.0f};
     std::atomic<float> m_outputVolume{1.0f};

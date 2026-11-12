@@ -59,6 +59,9 @@ pub struct AuthSuccessPayload {
     pub voice_port: u16,
     pub channels: Vec<ChannelInfo>,
     pub users: Vec<UserInfo>,
+    /// Lets the client decide which menus to show (the server still enforces everything).
+    pub is_admin: bool,
+    pub permissions: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,6 +77,8 @@ pub struct AuthFailedPayload {
 pub struct ChannelJoinedPayload {
     pub channel_id: i32,
     pub roster: Vec<UserInfo>,
+    /// False when the user is listen-only in this channel (ACL / op net access).
+    pub can_speak: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]

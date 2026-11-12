@@ -39,8 +39,12 @@ set(SOURCES
     src/voice/jitter_buffer.cpp
     src/voice/voice_session.cpp
     src/input/ptt_manager.cpp
+    src/input/joystick_input.cpp
     src/network/admin_api.cpp
     src/ui/admin/admin_panel.cpp
+    src/ui/ops/ops_manager.cpp
+    src/ui/ops/template_editor.cpp
+    src/ui/overlay/talk_overlay.cpp
     src/ui/settings_dialog.cpp
     src/ui/vu_meter.cpp
 )
@@ -58,13 +62,18 @@ set(HEADERS
     src/crypto/key_exchange.h
     src/crypto/srtp_session.h
     src/audio/ring_buffer.h
+    src/audio/radio_filter.h
     src/audio/audio_engine.h
     src/audio/opus_codec.h
     src/voice/voice_packet.h
     src/voice/jitter_buffer.h
     src/voice/voice_session.h
     src/input/ptt_manager.h
+    src/input/joystick_input.h
     src/ui/admin/admin_panel.h
+    src/ui/ops/ops_manager.h
+    src/ui/ops/template_editor.h
+    src/ui/overlay/talk_overlay.h
     src/ui/settings_dialog.h
     src/ui/vu_meter.h
 )
@@ -97,7 +106,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # Windows-specific
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+    # dinput8 + dxguid: joystick/HOTAS PTT (input/joystick_input.cpp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 dinput8 dxguid)
     # Set Windows subsystem (GUI app, no console in release)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         WIN32_EXECUTABLE $<CONFIG:Release>
