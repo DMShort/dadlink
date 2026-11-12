@@ -1,0 +1,5 @@
+[toolchain]
+# sqlx 0.7 does not build on newer compilers (never-type fallback change).
+# Bump together with an sqlx 0.8 upgrade.
+channel = "1.97.0"
+profile = "minimal"

@@ -1,5 +1,6 @@
 # Stage 1: Build
-FROM rust:latest AS builder
+# Pinned: sqlx 0.7 breaks on newer Rust (see rust-toolchain.toml)
+FROM rust:1.97-bookworm AS builder
 
 WORKDIR /build
 
