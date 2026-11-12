@@ -318,6 +318,16 @@ async fn handle_authenticate(
             super::metrics::metrics().total_auth_successes.inc();
             info!("User '{}' authenticated (id={})", user.username, user.id);
 
+            let role_perms = db::roles::get_user_permissions(&state.pool, user.id)
+                .await
+                .unwrap_or_default();
+            let is_admin = user.is_admin.unwrap_or(false);
+            let permissions = if is_admin {
+                0x1FF
+            } else {
+                crate::auth::permissions::compute_permissions(&role_perms)
+            };
+
             // Send auth success
             let _ = tx.send(Envelope::new("auth_success", &AuthSuccessPayload {
                 user_id: user.id,
@@ -325,9 +335,14 @@ async fn handle_authenticate(
                 voice_port: state.config.server.voice_port,
                 channels: channel_infos,
                 users: online_users,
+                is_admin,
+                permissions,
                 client_version: state.config.server.client_version.clone(),
                 client_download_url: state.config.server.client_download_url.clone(),
             }).to_json());
+
+            // Ops already running in the org, personalised to this user's roles
+            super::admin::ops::send_active_ops(state, user.id, org_id).await;
 
         }
         Err(reason) => {
@@ -448,11 +463,26 @@ async fn handle_join_channel(
         }
     }
 
+    // Channel ACL (per-role join/speak; channels without ACL rows stay open)
+    let access = match db::acl::channel_access(&state.pool, join.channel_id, user_id).await {
+        Ok(a) => a,
+        Err(e) => {
+            warn!("ACL lookup failed for channel {}: {}", join.channel_id, e);
+            let _ = tx.send(make_error("internal", "Could not check channel access"));
+            return;
+        }
+    };
+    if !access.can_join {
+        let _ = tx.send(make_error("forbidden", "You don't have access to this channel"));
+        return;
+    }
+
     // Try to join (checks max_users)
     if let Err(_) = state.channel_manager.join(join.channel_id, user_id) {
         let _ = tx.send(make_error("channel_full", "Channel is full"));
         return;
     }
+    state.channel_manager.set_can_speak(join.channel_id, user_id, access.can_speak);
 
     // Track in connection manager
     state.connection_manager.add_channel(user_id, join.channel_id);
@@ -464,6 +494,7 @@ async fn handle_join_channel(
     let _ = tx.send(Envelope::new("channel_joined", &ChannelJoinedPayload {
         channel_id: join.channel_id,
         roster: roster.clone(),
+        can_speak: access.can_speak,
     }).to_json());
 
     // Broadcast user_joined to other channel members

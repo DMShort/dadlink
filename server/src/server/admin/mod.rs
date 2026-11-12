@@ -1,6 +1,7 @@
 pub mod channels;
 pub mod invites;
 pub mod middleware;
+pub mod ops;
 pub mod roles;
 pub mod sessions;
 pub mod users;
@@ -39,4 +40,13 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/admin/sessions/:session_id", delete(sessions::revoke_session))
         // Audit
         .route("/admin/audit", get(sessions::get_audit_log))
+        // Ops (Admin or OpLeader)
+        .route("/ops/roles", get(ops::list_roles))
+        .route("/ops/templates", get(ops::list_templates))
+        .route("/ops/templates", post(ops::create_template))
+        .route("/ops/templates/:template_id", put(ops::update_template))
+        .route("/ops/templates/:template_id", delete(ops::delete_template))
+        .route("/ops", get(ops::list_ops))
+        .route("/ops", post(ops::start_op))
+        .route("/ops/:op_id", delete(ops::end_op))
 }

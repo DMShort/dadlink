@@ -55,10 +55,10 @@ pub async fn run_voice_server(
         let sender_id = packet.user_id as i32;
         let channel_id = packet.channel_id as i32;
 
-        // Sender must be joined to the channel they are transmitting on.
+        // Sender must be joined to the channel they address.
         // Without this, any authenticated user could talk into any channel id.
         if !channel_manager.is_member(channel_id, sender_id) {
-            trace!("User {} transmitted on channel {} without being a member — dropping", sender_id, channel_id);
+            trace!("User {} is not in channel {} — dropping", sender_id, channel_id);
             crate::server::metrics::metrics().total_voice_packets_dropped.inc();
             continue;
         }
@@ -77,7 +77,15 @@ pub async fn run_voice_server(
         connection_manager.set_udp_addr(sender_id, src_addr);
 
         // Empty payload = client keepalive: address registered above, nothing to forward.
+        // (Accepted from listen-only members too, or they would never receive audio.)
         if plaintext.is_empty() {
+            continue;
+        }
+
+        // Real audio: the sender must be allowed to speak here (channel ACL / op net access).
+        if !channel_manager.can_speak(channel_id, sender_id) {
+            trace!("User {} is listen-only on channel {} — dropping", sender_id, channel_id);
+            crate::server::metrics::metrics().total_voice_packets_dropped.inc();
             continue;
         }
 
