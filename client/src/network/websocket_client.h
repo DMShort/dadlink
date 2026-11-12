@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QMap>
+
 #include <QObject>
 #include <QWebSocket>
 #include <QJsonObject>
@@ -37,6 +39,8 @@ public:
 
     /// Authenticate with a saved token.
     void authenticateToken(const QString& token);
+    /// Authenticate with the single-use ticket from the Discord browser login.
+    void authenticateDiscord(const QString& ticket, const QString& orgTag);
 
     /// Send a typed JSON message to the server.
     void sendMessage(const QString& type, const QJsonObject& payload = {});
@@ -85,6 +89,12 @@ signals:
     void channelUpdated(const QJsonObject& channel);
     void channelDeleted(int channelId);
     void userCountChanged(int channelId, int userCount);
+    /// Sent just before channelJoined: false = listen-only in that channel.
+    void channelSpeakAccess(int channelId, bool canSpeak);
+
+    // Ops (personalised to this user's roles)
+    void opStarted(const QJsonObject& op);
+    void opEnded(int opId, const QString& name);
 
     // General
     void pongReceived(int latencyMs);
@@ -97,6 +107,11 @@ signals:
     // Connection issues
     void reconnecting(int attempt);
     void reconnectFailed();
+
+public:
+    /// Ops currently running (op_id -> op), cached so a window created after login
+    /// still sees ops announced right after auth_success.
+    QMap<int, QJsonObject> activeOps() const { return m_activeOps; }
 
 private slots:
     void onConnected();
@@ -115,6 +130,7 @@ private:
     void resetReconnect();
 
     QWebSocket m_socket;
+    QMap<int, QJsonObject> m_activeOps;
     State m_state = State::Disconnected;
 
     // Connection info (for reconnection)

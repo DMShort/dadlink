@@ -25,6 +25,8 @@ struct ChannelAudioConfig {
     int priority = 5;     // 1 = highest, 10 = lowest
     bool muted = false;
     bool openMic = false;  // always transmit in this channel (no PTT required)
+    float pan = 0.0f;      // -1 left, 0 centre, +1 right
+    bool radioFilter = false; // comms-radio voice effect
 };
 
 struct VoiceSettings {
@@ -47,6 +49,17 @@ struct OpusConfig {
     int complexity = 10;
     bool enableFec = true;
     bool enableDtx = true;
+};
+
+struct OverlayConfig {
+    bool enabled = true;
+    QString corner = "top-right"; // top-left | top-right | bottom-left | bottom-right
+    int offsetX = 24;             // px from the chosen corner
+    int offsetY = 140;
+    int screen = 0;               // monitor index
+    double scale = 1.0;           // 0.75 – 2.0
+    double opacity = 0.85;        // 0.3 – 1.0
+    bool showIdle = false;        // show a small "DadLink" tag when nobody is talking
 };
 
 struct UiConfig {
@@ -73,6 +86,10 @@ public:
     AudioConfig audio;
     OpusConfig opus;
     QMap<QString, int> hotkeys; // key name -> channel_id
+    /// PTT bindings for op nets, keyed by lower-case net name ("fleet" -> "joy:{…}:b5").
+    /// Op channels get new ids every op, so these follow the net name into each new op.
+    QMap<QString, QString> opNetHotkeys;
+    OverlayConfig overlay;
     QMap<int, ChannelAudioConfig> channelAudio; // channelId -> audio settings
     UiConfig ui;
 

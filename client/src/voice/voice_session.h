@@ -7,12 +7,15 @@
 #include <QTimer>
 #include <atomic>
 #include <memory>
+#include <chrono>
 #include <map>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 
 #include "audio/audio_engine.h"
 #include "audio/opus_codec.h"
+#include "audio/radio_filter.h"
 #include "crypto/srtp_session.h"
 #include "voice/voice_packet.h"
 #include "voice/jitter_buffer.h"
@@ -69,6 +72,15 @@ public:
     void setChannelVolume(uint32_t channelId, float volume);  // 0.0 – 1.0
     void setChannelPriority(uint32_t channelId, int priority); // 1 = highest
     void setChannelMuted(uint32_t channelId, bool muted);
+    struct ActiveSpeaker {
+        uint32_t userId;
+        uint32_t channelId;
+    };
+    /// Users whose voice packets arrived within the last windowMs (thread-safe).
+    std::vector<ActiveSpeaker> activeSpeakers(int windowMs = 350);
+
+    void setChannelPan(uint32_t channelId, float pan);              // -1 = left, 0 = centre, +1 = right
+    void setChannelRadioFilter(uint32_t channelId, bool enabled);   // comms-radio band-pass effect
     void removeChannelSettings(uint32_t channelId);
 
     /// Audio ducking: when a high-priority channel is active, lower-priority
@@ -121,7 +133,9 @@ private:
     struct SourceState {
         JitterBuffer jitterBuffer;
         OpusCodec decoder;
+        RadioFilter radio;      // per-speaker filter state (continuous across frames)
         uint32_t channelId = 0; // which channel this source is transmitting on
+        std::chrono::steady_clock::time_point lastPacket{}; // for "who's talking"
         SourceState() : jitterBuffer(20) {}
     };
     std::map<uint32_t, std::unique_ptr<SourceState>> m_sources;
@@ -132,6 +146,8 @@ private:
         float volume = 1.0f;   // 0.0 – 1.0
         int priority = 5;     // 1 = highest, 10 = lowest
         bool muted = false;
+        float pan = 0.0f;      // -1 left … +1 right
+        bool radioFilter = false;
     };
     std::unordered_map<uint32_t, ChannelAudioSettings> m_channelSettings;
     std::mutex m_channelSettingsMutex;
@@ -150,4 +166,9 @@ private:
     QSet<uint32_t> m_openMicChannels;
 
     void onPlaybackTimer();
+
+    // UDP keepalive while not transmitting (registers address with server, keeps NAT open)
+    void sendKeepalive();
+    static constexpr int KeepaliveIntervalTicks = 250; // 250 x 20ms = 5s
+    int m_keepaliveTicks = KeepaliveIntervalTicks;     // send one immediately on start
 };

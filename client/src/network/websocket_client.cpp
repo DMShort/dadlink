@@ -90,6 +90,23 @@ void WebSocketClient::authenticateToken(const QString& token) {
     sendMessage("authenticate", payload);
 }
 
+void WebSocketClient::authenticateDiscord(const QString& ticket, const QString& orgTag) {
+    // Tickets are single-use: after auth_success the client switches to token re-auth
+    m_pendingMethod = "discord";
+    m_pendingToken.clear();
+    m_pendingUsername.clear();
+    m_pendingPassword.clear();
+    m_pendingOrgTag = orgTag;
+
+    QJsonObject payload;
+    payload["method"] = "discord";
+    payload["token"] = ticket;
+    payload["org_tag"] = orgTag;
+
+    setState(State::Authenticating);
+    sendMessage("authenticate", payload);
+}
+
 void WebSocketClient::sendMessage(const QString& type, const QJsonObject& payload) {
     QJsonObject envelope;
     envelope["type"] = type;
@@ -216,6 +233,9 @@ void WebSocketClient::dispatchMessage(const QString& type, const QJsonObject& pa
         QJsonArray channels = payload["channels"].toArray();
         QJsonArray users = payload["users"].toArray();
 
+        // Fresh session: the server re-sends running ops right after auth_success
+        m_activeOps.clear();
+
         // Save token for reconnection
         m_pendingToken = token;
         m_pendingMethod = "token";
@@ -245,7 +265,19 @@ void WebSocketClient::dispatchMessage(const QString& type, const QJsonObject& pa
         emit keyExchangeComplete();
     }
     else if (type == "channel_joined") {
+        // can_speak absent = older server = full access
+        emit channelSpeakAccess(payload["channel_id"].toInt(), payload["can_speak"].toBool(true));
         emit channelJoined(payload["channel_id"].toInt(), payload["roster"].toArray());
+    }
+    else if (type == "op_started") {
+        QJsonObject op = payload["op"].toObject();
+        m_activeOps[op["id"].toInt()] = op;
+        emit opStarted(op);
+    }
+    else if (type == "op_ended") {
+        int opId = payload["op_id"].toInt();
+        m_activeOps.remove(opId);
+        emit opEnded(opId, payload["name"].toString());
     }
     else if (type == "user_joined") {
         qDebug() << "[WS] Received user_joined: channel_id=" << payload["channel_id"].toInt()

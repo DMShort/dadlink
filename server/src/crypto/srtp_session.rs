@@ -24,8 +24,8 @@ impl SrtpSession {
 
     /// Encrypt a plaintext Opus payload.
     /// Returns ciphertext with appended 16-byte auth tag.
-    pub fn encrypt(&self, plaintext: &[u8], sequence: u64) -> Result<Vec<u8>, SrtpError> {
-        let nonce = self.derive_nonce(sequence);
+    pub fn encrypt(&self, plaintext: &[u8], sequence: u64, source_id: u32) -> Result<Vec<u8>, SrtpError> {
+        let nonce = self.derive_nonce(sequence, source_id);
         self.cipher
             .encrypt(&nonce, plaintext)
             .map_err(|_| SrtpError::EncryptionFailed)
@@ -33,8 +33,8 @@ impl SrtpSession {
 
     /// Decrypt a ciphertext (with appended auth tag) to recover the Opus payload.
     /// Returns Err if authentication fails — caller MUST reject the packet.
-    pub fn decrypt(&self, ciphertext: &[u8], sequence: u64) -> Result<Vec<u8>, SrtpError> {
-        let nonce = self.derive_nonce(sequence);
+    pub fn decrypt(&self, ciphertext: &[u8], sequence: u64, source_id: u32) -> Result<Vec<u8>, SrtpError> {
+        let nonce = self.derive_nonce(sequence, source_id);
         self.cipher
             .decrypt(&nonce, ciphertext)
             .map_err(|_| SrtpError::DecryptionFailed)
@@ -42,8 +42,12 @@ impl SrtpSession {
 
     /// Derive a 12-byte nonce from the sequence number and salt.
     /// XOR the sequence number (zero-padded to 12 bytes) with the salt (zero-padded to 12 bytes).
-    fn derive_nonce(&self, sequence: u64) -> GenericArray<u8, aes_gcm::aead::consts::U12> {
+    /// Nonce = salt XOR (source_id[4] || sequence[8]).
+    /// source_id is the speaker's user id, so packets from different speakers that share a
+    /// sequence number never reuse a key/nonce pair when re-encrypted for the same listener.
+    fn derive_nonce(&self, sequence: u64, source_id: u32) -> GenericArray<u8, aes_gcm::aead::consts::U12> {
         let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[0..4].copy_from_slice(&source_id.to_be_bytes());
 
         // Place sequence number in the last 8 bytes
         nonce_bytes[4..12].copy_from_slice(&sequence.to_be_bytes());

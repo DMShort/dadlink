@@ -16,7 +16,60 @@ pub struct AppConfig {
     pub voice: VoiceConfig,
     #[serde(default)]
     pub redis: RedisConfig,
+    #[serde(default)]
+    pub discord: DiscordConfig,
 }
+
+/// "Login with Discord". Disabled unless client_id, client_secret and redirect_uri are set.
+#[derive(Debug, Deserialize, Clone)]
+pub struct DiscordConfig {
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    /// Public URL of this server's callback, registered in the Discord developer portal,
+    /// e.g. https://voice.example.org:9000/auth/discord/callback
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+    /// If set, only members of this Discord server (guild) may log in, and their Discord
+    /// roles are synced to DadLink roles that carry a matching discord_role_id.
+    #[serde(default)]
+    pub guild_id: Option<String>,
+    /// Create a DadLink account on first Discord login (otherwise an admin must link one).
+    #[serde(default = "default_true")]
+    pub auto_create_users: bool,
+    /// Overridable for tests.
+    #[serde(default = "default_discord_api")]
+    pub api_base: String,
+    #[serde(default = "default_discord_authorize")]
+    pub authorize_url: String,
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self {
+        Self {
+            client_id: None,
+            client_secret: None,
+            redirect_uri: None,
+            guild_id: None,
+            auto_create_users: true,
+            api_base: default_discord_api(),
+            authorize_url: default_discord_authorize(),
+        }
+    }
+}
+
+impl DiscordConfig {
+    pub fn enabled(&self) -> bool {
+        self.client_id.as_deref().map_or(false, |s| !s.is_empty())
+            && self.client_secret.as_deref().map_or(false, |s| !s.is_empty())
+            && self.redirect_uri.as_deref().map_or(false, |s| !s.is_empty())
+    }
+}
+
+fn default_true() -> bool { true }
+fn default_discord_api() -> String { "https://discord.com/api/v10".into() }
+fn default_discord_authorize() -> String { "https://discord.com/oauth2/authorize".into() }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
@@ -197,6 +250,7 @@ impl Default for AppConfig {
             audit: AuditConfig::default(),
             voice: VoiceConfig::default(),
             redis: RedisConfig::default(),
+            discord: DiscordConfig::default(),
         }
     }
 }
