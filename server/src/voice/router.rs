@@ -55,10 +55,15 @@ pub async fn run_voice_server(
         let sender_id = packet.user_id as i32;
         let channel_id = packet.channel_id as i32;
 
-        // Learn sender's UDP address
-        connection_manager.set_udp_addr(sender_id, src_addr);
+        // Sender must be joined to the channel they are transmitting on.
+        // Without this, any authenticated user could talk into any channel id.
+        if !channel_manager.is_member(channel_id, sender_id) {
+            trace!("User {} transmitted on channel {} without being a member — dropping", sender_id, channel_id);
+            crate::server::metrics::metrics().total_voice_packets_dropped.inc();
+            continue;
+        }
 
-        // Decrypt
+        // Decrypt (authenticates the sender: only they hold their SRTP key)
         let plaintext = match srtp_manager.decrypt(sender_id, &packet.payload, packet.sequence) {
             Ok(p) => p,
             Err(_) => {
@@ -66,6 +71,15 @@ pub async fn run_voice_server(
                 continue;
             }
         };
+
+        // Learn sender's UDP address only after the packet authenticated,
+        // so a forged user_id cannot redirect another user's incoming audio.
+        connection_manager.set_udp_addr(sender_id, src_addr);
+
+        // Empty payload = client keepalive: address registered above, nothing to forward.
+        if plaintext.is_empty() {
+            continue;
+        }
 
         // Get channel members (excluding sender)
         let members = channel_manager.members(channel_id);

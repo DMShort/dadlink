@@ -213,7 +213,17 @@ void VoiceSession::onTransmitTimer() {
     bool pttActive = m_pttActive.load(std::memory_order_relaxed);
     bool hasOpenMic = !m_openMicChannels.isEmpty();
 
-    if (!pttActive && !hasOpenMic) return;
+    if (!pttActive && !hasOpenMic) {
+        // Not talking: send an encrypted empty keepalive every ~5s so the server
+        // knows our UDP address (listen-only users would otherwise hear nothing)
+        // and the NAT mapping stays open.
+        if (++m_keepaliveTicks >= KeepaliveIntervalTicks) {
+            m_keepaliveTicks = 0;
+            sendKeepalive();
+        }
+        return;
+    }
+    m_keepaliveTicks = 0;
     if (!m_srtpSession || !m_srtpSession->isReady()) {
         if (m_txSequence == 0) qDebug() << "[TX] SRTP not ready";
         return;
@@ -266,6 +276,29 @@ void VoiceSession::onTransmitTimer() {
 
     m_txSequence++;
     m_txTimestamp += AudioEngine::FramesPerBuffer;
+}
+
+void VoiceSession::sendKeepalive() {
+    if (m_channelId == 0 || !m_srtpSession || !m_srtpSession->isReady()) return;
+
+    const uint8_t dummy = 0;
+    auto encrypted = m_srtpSession->encrypt(&dummy, 0, m_txSequence); // empty payload, tag only
+    if (encrypted.empty()) return;
+
+    VoicePacket pkt;
+    pkt.sequence  = m_txSequence;
+    pkt.timestamp = m_txTimestamp;
+    pkt.channelId = m_channelId;
+    pkt.userId    = m_userId;
+
+    auto bytes = pkt.toBytes(encrypted.data(), encrypted.size());
+    m_udpSocket.writeDatagram(
+        reinterpret_cast<const char*>(bytes.data()),
+        static_cast<qint64>(bytes.size()),
+        m_resolvedAddr,
+        static_cast<quint16>(m_voicePort)
+    );
+    m_txSequence++; // never reuse a GCM nonce
 }
 
 // --- Receive path ---

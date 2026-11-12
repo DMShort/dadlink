@@ -150,4 +150,9 @@ private:
     QSet<uint32_t> m_openMicChannels;
 
     void onPlaybackTimer();
+
+    // UDP keepalive while not transmitting (registers address with server, keeps NAT open)
+    void sendKeepalive();
+    static constexpr int KeepaliveIntervalTicks = 250; // 250 x 20ms = 5s
+    int m_keepaliveTicks = KeepaliveIntervalTicks;     // send one immediately on start
 };
