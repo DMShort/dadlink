@@ -142,6 +142,44 @@ void AdminApi::getAuditLog(int limit, int offset, SuccessCallback onSuccess, Err
 
 // --- HTTP helpers ---
 
+// --- Ops ---
+
+void AdminApi::listOpRoles(SuccessCallback onSuccess, ErrorCallback onError) {
+    get("/ops/roles", onSuccess, onError);
+}
+
+void AdminApi::listOpTemplates(SuccessCallback onSuccess, ErrorCallback onError) {
+    get("/ops/templates", onSuccess, onError);
+}
+
+void AdminApi::createOpTemplate(const QJsonObject& tmpl, SuccessCallback onSuccess, ErrorCallback onError) {
+    post("/ops/templates", tmpl, onSuccess, onError);
+}
+
+void AdminApi::updateOpTemplate(int templateId, const QJsonObject& tmpl,
+                                SuccessCallback onSuccess, ErrorCallback onError) {
+    put(QString("/ops/templates/%1").arg(templateId), tmpl, onSuccess, onError);
+}
+
+void AdminApi::deleteOpTemplate(int templateId, SuccessCallback onSuccess, ErrorCallback onError) {
+    del(QString("/ops/templates/%1").arg(templateId), onSuccess, onError);
+}
+
+void AdminApi::listOps(SuccessCallback onSuccess, ErrorCallback onError) {
+    get("/ops", onSuccess, onError);
+}
+
+void AdminApi::startOp(int templateId, const QString& name, SuccessCallback onSuccess, ErrorCallback onError) {
+    QJsonObject body;
+    body["template_id"] = templateId;
+    if (!name.isEmpty()) body["name"] = name;
+    post("/ops", body, onSuccess, onError);
+}
+
+void AdminApi::endOp(int opId, SuccessCallback onSuccess, ErrorCallback onError) {
+    del(QString("/ops/%1").arg(opId), onSuccess, onError);
+}
+
 void AdminApi::get(const QString& path, SuccessCallback onSuccess, ErrorCallback onError) {
     QNetworkRequest request(QUrl(m_baseUrl + path));
     request.setRawHeader("Authorization", ("Bearer " + m_token).toUtf8());

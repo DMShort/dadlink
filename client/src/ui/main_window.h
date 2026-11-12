@@ -18,6 +18,8 @@ class WebSocketClient;
 class ChannelTree;
 class UserList;
 class ActivityLog;
+class OpsManager;
+class QFrame;
 class AdminPanel;
 class VuMeter;
 
@@ -61,7 +63,13 @@ private slots:
     void onDisconnectAction();
     void onPttStateChanged(bool active, int channelId);
 
+    // Ops
+    void onOpStarted(const QJsonObject& op);
+    void onOpEnded(int opId, const QString& name);
+
 private:
+    void joinOp(int opId);
+    void showOpBanner(const QJsonObject& op);
     void setupUi();
     void setupMenuBar();
     void setupStatusBar();
@@ -115,4 +123,14 @@ private:
     bool m_isAdmin = false;
     AdminApi m_adminApi;
     AdminPanel* m_adminPanel = nullptr;
+
+    // Ops
+    OpsManager* m_opsManager = nullptr;
+    QMap<int, QJsonObject> m_ops;          // op_id -> op (personalised view from server)
+    QMap<int, QString> m_opNetNames;       // channel_id -> net name, for live op nets
+    QSet<int> m_listenOnly;                // joined channels where we may not transmit
+    QFrame* m_opBanner = nullptr;
+    QLabel* m_opBannerText = nullptr;
+    QPushButton* m_opJoinBtn = nullptr;
+    int m_bannerOpId = -1;
 };

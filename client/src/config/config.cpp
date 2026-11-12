@@ -44,6 +44,11 @@ bool AppConfig::load(const QString& path) {
     if (root.contains("hotkeys"))       hotkeysFromJson(root["hotkeys"].toObject());
     if (root.contains("channel_audio")) channelAudioFromJson(root["channel_audio"].toObject());
     if (root.contains("ui"))            uiFromJson(root["ui"].toObject());
+    opNetHotkeys.clear();
+    if (root.contains("op_net_hotkeys")) {
+        QJsonObject o = root["op_net_hotkeys"].toObject();
+        for (auto it = o.constBegin(); it != o.constEnd(); ++it) opNetHotkeys[it.key()] = it.value().toString();
+    }
 
     return true;
 }
@@ -60,6 +65,9 @@ bool AppConfig::save(const QString& path) const {
     root["hotkeys"]       = hotkeysToJson();
     root["channel_audio"] = channelAudioToJson();
     root["ui"]            = uiToJson();
+    QJsonObject opKeys;
+    for (auto it = opNetHotkeys.constBegin(); it != opNetHotkeys.constEnd(); ++it) opKeys[it.key()] = it.value();
+    root["op_net_hotkeys"] = opKeys;
 
     QJsonDocument doc(root);
 

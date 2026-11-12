@@ -17,6 +17,56 @@
 #include <QClipboard>
 #include <QApplication>
 #include <QDateTime>
+#include <QGridLayout>
+#include <functional>
+#include <memory>
+#include <vector>
+
+namespace {
+// Must match server/src/auth/permissions.rs
+struct PermDef { int bit; const char* label; const char* tip; };
+const PermDef kPerms[] = {
+    {1,   "Join channels",   "Reserved: per-channel access is set by channel ACLs / op templates"},
+    {2,   "Speak",           "Reserved: per-channel talk rights are set by channel ACLs / op templates"},
+    {4,   "Move users",      ""},
+    {8,   "Manage channels", ""},
+    {16,  "Manage users",    ""},
+    {32,  "Manage roles",    ""},
+    {64,  "View audit log",  ""},
+    {128, "Admin",           "Full access to everything, including the Admin Panel"},
+    {256, "Op Leader",       "Create op templates and start/end ops (Ops menu) without full admin"},
+};
+
+QString permissionNames(int mask) {
+    QStringList names;
+    for (const auto& p : kPerms) if (mask & p.bit) names << p.label;
+    return names.isEmpty() ? QStringLiteral("—") : names.join(", ");
+}
+
+/// Checkbox list for a role's permission bits. Returns a getter for the resulting mask.
+std::function<int()> addPermissionPicker(QFormLayout* form, QWidget* parent, int initial) {
+    auto* box = new QWidget(parent);
+    auto* grid = new QGridLayout(box);
+    grid->setContentsMargins(0, 0, 0, 0);
+    auto checks = std::make_shared<std::vector<std::pair<QCheckBox*, int>>>();
+    int i = 0;
+    for (const auto& p : kPerms) {
+        auto* cb = new QCheckBox(p.label, box);
+        cb->setChecked(initial & p.bit);
+        if (*p.tip) cb->setToolTip(p.tip);
+        grid->addWidget(cb, i / 2, i % 2);
+        checks->push_back({cb, p.bit});
+        ++i;
+    }
+    form->addRow("Permissions:", box);
+    return [checks]() {
+        int mask = 0;
+        for (const auto& [cb, bit] : *checks) if (cb->isChecked()) mask |= bit;
+        return mask;
+    };
+}
+}
+
 
 AdminPanel::AdminPanel(AdminApi* api, QWidget* parent)
     : QWidget(parent)
@@ -396,7 +446,9 @@ void AdminPanel::refreshRoles() {
                 auto r = roles[i].toObject();
                 m_rolesTable->setItem(i, 0, new QTableWidgetItem(QString::number(r["id"].toInt())));
                 m_rolesTable->setItem(i, 1, new QTableWidgetItem(r["name"].toString()));
-                m_rolesTable->setItem(i, 2, new QTableWidgetItem(QString::number(r["permissions"].toInt())));
+                auto* permItem = new QTableWidgetItem(permissionNames(r["permissions"].toInt()));
+                permItem->setData(Qt::UserRole, r["permissions"].toInt());
+                m_rolesTable->setItem(i, 2, permItem);
                 m_rolesTable->setItem(i, 3, new QTableWidgetItem(QString::number(r["priority"].toInt())));
                 m_rolesTable->setItem(i, 4, new QTableWidgetItem(r["color"].toString()));
             }
@@ -412,15 +464,13 @@ void AdminPanel::onAddRole() {
     auto* form = new QFormLayout(&dialog);
 
     auto* name = new QLineEdit(&dialog);
-    auto* permissions = new QSpinBox(&dialog);
-    permissions->setRange(0, 255);
     auto* priority = new QSpinBox(&dialog);
     priority->setRange(0, 999);
     auto* color = new QLineEdit(&dialog);
     color->setPlaceholderText("#FF0000");
 
     form->addRow("Name:", name);
-    form->addRow("Permissions:", permissions);
+    auto permissions = addPermissionPicker(form, &dialog, 1 | 2);
     form->addRow("Priority:", priority);
     form->addRow("Color:", color);
 
@@ -431,7 +481,7 @@ void AdminPanel::onAddRole() {
 
     if (dialog.exec() != QDialog::Accepted) return;
 
-    m_api->createRole(name->text(), permissions->value(), priority->value(), color->text(),
+    m_api->createRole(name->text(), permissions(), priority->value(), color->text(),
         [this](const QJsonObject&) { showSuccess("Role created"); refreshRoles(); },
         [this](int, const QString& err) { showError("Failed to create role: " + err); }
     );
@@ -445,15 +495,21 @@ void AdminPanel::onEditRole() {
     dialog.setWindowTitle("Edit Role");
     auto* form = new QFormLayout(&dialog);
 
-    auto* name = new QLineEdit(&dialog);
-    auto* permissions = new QSpinBox(&dialog);
-    permissions->setRange(0, 255);
+    // Prefill with the role's current values (previously every edit reset permissions to 0)
+    const auto selected = m_rolesTable->selectedItems();
+    const int row = selected.isEmpty() ? -1 : selected.first()->row();
+    auto cell = [this, row](int col) { auto* it = m_rolesTable->item(row, col); return it ? it->text() : QString(); };
+    const int currentPerms = (row >= 0 && m_rolesTable->item(row, 2))
+        ? m_rolesTable->item(row, 2)->data(Qt::UserRole).toInt() : 0;
+
+    auto* name = new QLineEdit(cell(1), &dialog);
     auto* priority = new QSpinBox(&dialog);
     priority->setRange(0, 999);
-    auto* color = new QLineEdit(&dialog);
+    priority->setValue(cell(3).toInt());
+    auto* color = new QLineEdit(cell(4), &dialog);
 
     form->addRow("Name:", name);
-    form->addRow("Permissions:", permissions);
+    auto permissions = addPermissionPicker(form, &dialog, currentPerms);
     form->addRow("Priority:", priority);
     form->addRow("Color:", color);
 
@@ -466,7 +522,7 @@ void AdminPanel::onEditRole() {
 
     QJsonObject fields;
     if (!name->text().isEmpty()) fields["name"] = name->text();
-    fields["permissions"] = permissions->value();
+    fields["permissions"] = permissions();
     fields["priority"] = priority->value();
     if (!color->text().isEmpty()) fields["color"] = color->text();
 

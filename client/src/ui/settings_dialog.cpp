@@ -245,6 +245,14 @@ QWidget* SettingsDialog::createHotkeyTab() {
                     ++it;
             }
             m_config.hotkeys[key] = channelId;
+
+            // Op net: remember the binding by net name for future ops
+            if (m_opNetNames.contains(channelId)) {
+                for (auto it = m_config.opNetHotkeys.begin(); it != m_config.opNetHotkeys.end(); ) {
+                    if (it.value() == key) it = m_config.opNetHotkeys.erase(it); else ++it;
+                }
+                m_config.opNetHotkeys[m_opNetNames.value(channelId).toLower()] = key;
+            }
             loadHotkeyTable();
         });
         connect(m_pttManager, &PttManager::captureCancelled, this, [this]() { finishCapture(); });
@@ -521,6 +529,9 @@ void SettingsDialog::loadHotkeyTable() {
 
         connect(removeBtn, &QPushButton::clicked, this, [this, binding, channelId]() {
             m_config.hotkeys.remove(binding);
+            if (m_opNetNames.contains(channelId)) {
+                m_config.opNetHotkeys.remove(m_opNetNames.value(channelId).toLower());
+            }
             if (m_pttManager) {
                 m_pttManager->removeHotkey(channelId);
             }

@@ -6,12 +6,14 @@
 #include "settings_dialog.h"
 #include "network/websocket_client.h"
 #include "ui/admin/admin_panel.h"
+#include "ui/ops/ops_manager.h"
 
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QMenuBar>
+#include <QFrame>
 #include <QStatusBar>
 #include <QCloseEvent>
 #include <QGroupBox>
@@ -41,6 +43,10 @@ MainWindow::MainWindow(AppConfig& config, WebSocketClient* wsClient,
     populateChannels(channels);
     populateUsers(users);
 
+    // Ops announced right after login (before this window existed) are cached by the client
+    const auto ops = m_wsClient->activeOps();
+    for (auto it = ops.constBegin(); it != ops.constEnd(); ++it) onOpStarted(it.value());
+
     // Probe admin API to check if user has admin access
     m_adminApi.configure(config.server.address, config.server.port, config.server.useTls, token);
     m_adminApi.listUsers(
@@ -68,6 +74,19 @@ MainWindow::MainWindow(AppConfig& config, WebSocketClient* wsClient,
             // Not admin — silently ignore
         }
     );
+
+    // Probe the ops API: Admins and Op Leaders get an Ops menu
+    m_adminApi.listOpTemplates(
+        [this](const QJsonObject&) {
+            m_opsManager = new OpsManager(&m_adminApi, this);
+            auto* opsMenu = menuBar()->addMenu("&Ops");
+            opsMenu->addAction("&Op Manager…", this, [this]() {
+                m_opsManager->refresh();
+                m_opsManager->show();
+                m_opsManager->raise();
+            });
+        },
+        [](int, const QString&) { /* not an op leader */ });
 
     // Initialize voice session
     m_voiceSession.initialize(
@@ -122,6 +141,27 @@ void MainWindow::setupUi() {
     auto* leftPanel = new QWidget(this);
     auto* leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(0, 0, 0, 0);
+
+    // Op banner: appears when an op starts, offers one-click join to your assigned nets
+    m_opBanner = new QFrame(this);
+    m_opBanner->setStyleSheet("QFrame { background: #1d3557; border: 1px solid #457b9d; border-radius: 4px; }"
+                              "QLabel { color: #f1faee; border: none; }");
+    auto* bannerLayout = new QVBoxLayout(m_opBanner);
+    bannerLayout->setContentsMargins(8, 6, 8, 6);
+    m_opBannerText = new QLabel(m_opBanner);
+    m_opBannerText->setWordWrap(true);
+    bannerLayout->addWidget(m_opBannerText);
+    auto* bannerButtons = new QHBoxLayout();
+    m_opJoinBtn = new QPushButton("Join op", m_opBanner);
+    m_opJoinBtn->setStyleSheet("font-weight: bold;");
+    auto* dismissBtn = new QPushButton("Dismiss", m_opBanner);
+    bannerButtons->addWidget(m_opJoinBtn);
+    bannerButtons->addWidget(dismissBtn);
+    bannerLayout->addLayout(bannerButtons);
+    m_opBanner->hide();
+    leftLayout->addWidget(m_opBanner);
+    connect(m_opJoinBtn, &QPushButton::clicked, this, [this]() { joinOp(m_bannerOpId); });
+    connect(dismissBtn, &QPushButton::clicked, this, [this]() { m_opBanner->hide(); });
 
     m_channelTree = new ChannelTree(this);
     leftLayout->addWidget(m_channelTree, 1);
@@ -209,6 +249,7 @@ void MainWindow::setupMenuBar() {
     settingsMenu->addAction("&Preferences...", this, [this]() {
         SettingsDialog dialog(m_config, &m_voiceSession.audioEngine(),
                               &m_pttManager, m_channelTree, &m_voiceSession, this);
+        dialog.setOpNetNames(m_opNetNames);
         connect(&dialog, &SettingsDialog::audioSettingsChanged, this, [this]() {
             m_voiceSession.setInputVolume(m_config.audio.inputVolume);
             m_voiceSession.setOutputVolume(m_config.audio.outputVolume);
@@ -250,6 +291,12 @@ void MainWindow::setupStatusBar() {
 
 void MainWindow::connectSignals() {
     // WebSocket events
+    connect(m_wsClient, &WebSocketClient::channelSpeakAccess, this, [this](int channelId, bool canSpeak) {
+        if (canSpeak) m_listenOnly.remove(channelId);
+        else          m_listenOnly.insert(channelId);
+    });
+    connect(m_wsClient, &WebSocketClient::opStarted, this, &MainWindow::onOpStarted);
+    connect(m_wsClient, &WebSocketClient::opEnded, this, &MainWindow::onOpEnded);
     connect(m_wsClient, &WebSocketClient::channelJoined, this, &MainWindow::onChannelJoined);
     connect(m_wsClient, &WebSocketClient::userJoined, this, &MainWindow::onUserJoined);
     connect(m_wsClient, &WebSocketClient::userLeft, this, &MainWindow::onUserLeft);
@@ -372,15 +419,20 @@ void MainWindow::onChannelJoined(int channelId, const QJsonArray& roster) {
     }
 
     // Restore open-mic preference from config
-    if (m_config.channelAudio.contains(channelId) && m_config.channelAudio[channelId].openMic) {
+    if (m_config.channelAudio.contains(channelId) && m_config.channelAudio[channelId].openMic
+        && !m_listenOnly.contains(channelId)) {
         m_voiceSession.setOpenMic(static_cast<uint32_t>(channelId), true);
         m_pttIndicator->setText(QString("OPEN MIC: CH #%1").arg(channelId));
         m_pttIndicator->setStyleSheet("background: #4a3000; color: #ffa500; border-radius: 4px; padding: 4px; font-weight: bold;");
     }
 
-    m_activityLog->addEntry(QString("Joined channel #%1 (%2 channels active)")
-                                .arg(channelId).arg(m_joinedChannels.size()),
-                            QColor(0, 200, 0));
+    const bool listenOnly = m_listenOnly.contains(channelId);
+    const QString label = m_opNetNames.contains(channelId)
+        ? m_opNetNames.value(channelId) : QString("#%1").arg(channelId);
+    m_activityLog->addEntry(QString("Joined %1%2 (%3 channels active)")
+                                .arg(label, listenOnly ? " — listen only" : "")
+                                .arg(m_joinedChannels.size()),
+                            listenOnly ? QColor(255, 165, 0) : QColor(0, 200, 0));
 }
 
 void MainWindow::onUserJoined(int channelId, const QJsonObject& user) {
@@ -432,6 +484,17 @@ void MainWindow::onChannelUpdated(const QJsonObject& channel) {
 }
 
 void MainWindow::onChannelDeleted(int channelId) {
+    m_listenOnly.remove(channelId);
+    if (m_opNetNames.remove(channelId) > 0) {
+        // Op net gone: drop its per-channel config so stale ids don't pile up.
+        // (The PTT binding lives on in opNetHotkeys, keyed by net name.)
+        m_config.channelAudio.remove(channelId);
+        for (auto it = m_config.hotkeys.begin(); it != m_config.hotkeys.end(); ) {
+            if (it.value() == channelId) it = m_config.hotkeys.erase(it); else ++it;
+        }
+        m_voiceSession.removeChannelSettings(static_cast<uint32_t>(channelId));
+        m_config.save();
+    }
     m_channelTree->removeChannel(channelId);
     m_joinedChannels.remove(channelId);
     m_channelRosters.remove(channelId);
@@ -611,6 +674,7 @@ void MainWindow::onChannelLeaveRequested(int channelId) {
 
     m_joinedChannels.remove(channelId);
     m_channelRosters.remove(channelId);
+    m_listenOnly.remove(channelId);
     m_channelTree->removeJoinedChannel(channelId);
     // PTT binding is kept so it works again on rejoin; onPttStateChanged ignores unjoined channels.
     m_voiceSession.setOpenMic(static_cast<uint32_t>(channelId), false);
@@ -672,6 +736,14 @@ void MainWindow::onPttStateChanged(bool active, int channelId) {
             return;
         }
 
+        // Listen-only net: don't open the mic, and say why
+        if (m_listenOnly.contains(targetChannel)) {
+            QString net = m_opNetNames.value(targetChannel, QString("#%1").arg(targetChannel));
+            m_pttIndicator->setText(QString("LISTEN ONLY: %1").arg(net));
+            m_pttIndicator->setStyleSheet("background: #4a3000; color: #ffa500; border-radius: 4px; padding: 4px; font-weight: bold;");
+            return;
+        }
+
         // Switch voice session to target channel (no jitter buffer clear)
         m_voiceSession.setTransmitChannel(static_cast<uint32_t>(targetChannel));
         m_voiceSession.setPttActive(true);
@@ -683,6 +755,101 @@ void MainWindow::onPttStateChanged(bool active, int channelId) {
         m_pttIndicator->setText("PTT: OFF");
         m_pttIndicator->setStyleSheet("background: #333; color: #888; border-radius: 4px; padding: 4px;");
     }
+}
+
+// --- Ops ---
+
+void MainWindow::onOpStarted(const QJsonObject& op) {
+    const int opId = op["id"].toInt();
+    const bool isNew = !m_ops.contains(opId);
+    m_ops[opId] = op;
+    for (const auto& v : op["nets"].toArray()) {
+        QJsonObject n = v.toObject();
+        m_opNetNames[n["channel_id"].toInt()] = n["name"].toString();
+    }
+    if (isNew) {
+        m_activityLog->addEntry(QString("Op \"%1\" is live.").arg(op["name"].toString()), QColor(100, 170, 255));
+    }
+    showOpBanner(op);
+}
+
+void MainWindow::showOpBanner(const QJsonObject& op) {
+    QStringList mine;
+    for (const auto& v : op["nets"].toArray()) {
+        QJsonObject n = v.toObject();
+        if (!n["assigned"].toBool()) continue;
+        mine << QString("%1 (%2)").arg(n["name"].toString(),
+                                       n["access"].toString() == "talk" ? "talk" : "listen");
+    }
+    m_bannerOpId = op["id"].toInt();
+    if (mine.isEmpty()) {
+        m_opBannerText->setText(QString("<b>Op %1 is live.</b><br>Your roles aren't assigned to any of its nets. "
+                                        "You can still join its open channels from the list.")
+                                    .arg(op["name"].toString().toHtmlEscaped()));
+        m_opJoinBtn->hide();
+    } else {
+        m_opBannerText->setText(QString("<b>Op %1 is live.</b><br>Your nets: %2")
+                                    .arg(op["name"].toString().toHtmlEscaped(), mine.join(", ").toHtmlEscaped()));
+        m_opJoinBtn->show();
+    }
+    m_opBanner->show();
+}
+
+void MainWindow::joinOp(int opId) {
+    if (!m_ops.contains(opId)) return;
+    const QJsonObject op = m_ops[opId];
+    int joined = 0;
+
+    for (const auto& v : op["nets"].toArray()) {
+        QJsonObject n = v.toObject();
+        if (!n["assigned"].toBool()) continue;
+        const int channelId = n["channel_id"].toInt();
+        const auto chId = static_cast<uint32_t>(channelId);
+        const QString netName = n["name"].toString();
+
+        // Audio layout from the op leader's template (the member can still change it in Settings)
+        ChannelAudioConfig& cfg = m_config.channelAudio[channelId];
+        cfg.priority = n["priority"].toInt(5);
+        cfg.pan = static_cast<float>(n["pan"].toDouble());
+        cfg.radioFilter = n["radio"].toBool();
+        m_voiceSession.setChannelVolume(chId, cfg.volume);
+        m_voiceSession.setChannelPriority(chId, cfg.priority);
+        m_voiceSession.setChannelPan(chId, cfg.pan);
+        m_voiceSession.setChannelRadioFilter(chId, cfg.radioFilter);
+        m_voiceSession.setChannelMuted(chId, false);
+        cfg.muted = false;
+
+        // PTT binding remembered for this net name from earlier ops
+        const QString binding = m_config.opNetHotkeys.value(netName.toLower());
+        if (!binding.isEmpty()) {
+            m_pttManager.setBinding(binding, channelId);
+            for (auto it = m_config.hotkeys.begin(); it != m_config.hotkeys.end(); ) {
+                if (it.value() == channelId || it.key() == binding) it = m_config.hotkeys.erase(it); else ++it;
+            }
+            m_config.hotkeys[binding] = channelId;
+        }
+
+        if (!m_joinedChannels.contains(channelId)) {
+            QJsonObject joinPayload;
+            joinPayload["channel_id"] = channelId;
+            m_wsClient->sendMessage("join_channel", joinPayload);
+        }
+        ++joined;
+    }
+    m_config.save();
+    m_opBanner->hide();
+    m_activityLog->addEntry(QString("Joining op \"%1\": %2 net(s).").arg(op["name"].toString()).arg(joined),
+                            QColor(100, 170, 255));
+}
+
+void MainWindow::onOpEnded(int opId, const QString& name) {
+    m_ops.remove(opId);
+    if (m_bannerOpId == opId) {
+        m_opBanner->hide();
+        m_bannerOpId = -1;
+    }
+    m_activityLog->addEntry(QString("Op \"%1\" ended.").arg(name), QColor(160, 160, 160));
+    // Its channels are removed via channel_deleted (see onChannelDeleted)
 }
 
 void MainWindow::onDisconnectAction() {

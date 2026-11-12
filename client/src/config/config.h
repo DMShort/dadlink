@@ -75,6 +75,9 @@ public:
     AudioConfig audio;
     OpusConfig opus;
     QMap<QString, int> hotkeys; // key name -> channel_id
+    /// PTT bindings for op nets, keyed by lower-case net name ("fleet" -> "joy:{…}:b5").
+    /// Op channels get new ids every op, so these follow the net name into each new op.
+    QMap<QString, QString> opNetHotkeys;
     QMap<int, ChannelAudioConfig> channelAudio; // channelId -> audio settings
     UiConfig ui;
 
