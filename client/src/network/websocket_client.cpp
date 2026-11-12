@@ -90,6 +90,23 @@ void WebSocketClient::authenticateToken(const QString& token) {
     sendMessage("authenticate", payload);
 }
 
+void WebSocketClient::authenticateDiscord(const QString& ticket, const QString& orgTag) {
+    // Tickets are single-use: after auth_success the client switches to token re-auth
+    m_pendingMethod = "discord";
+    m_pendingToken.clear();
+    m_pendingUsername.clear();
+    m_pendingPassword.clear();
+    m_pendingOrgTag = orgTag;
+
+    QJsonObject payload;
+    payload["method"] = "discord";
+    payload["token"] = ticket;
+    payload["org_tag"] = orgTag;
+
+    setState(State::Authenticating);
+    sendMessage("authenticate", payload);
+}
+
 void WebSocketClient::sendMessage(const QString& type, const QJsonObject& payload) {
     QJsonObject envelope;
     envelope["type"] = type;

@@ -59,7 +59,11 @@ async fn handle_connection(socket: WebSocket, state: AppState, remote_ip: String
 
     // Send challenge
     let challenge = Envelope::new("challenge", &ChallengePayload {
-        methods: vec!["password".into(), "token".into()],
+        methods: if state.config.discord.enabled() {
+            vec!["password".into(), "token".into(), "discord".into()]
+        } else {
+            vec!["password".into(), "token".into()]
+        },
     });
     if ws_sink.send(Message::Text(challenge.to_json())).await.is_err() {
         return;
@@ -233,6 +237,7 @@ async fn handle_authenticate(
             )
             .await
         }
+        "discord" => authenticate_discord(&state.pool, auth.token.as_deref().unwrap_or(""), &auth.org_tag).await,
         _ => {
             let _ = tx.send(Envelope::new("auth_failed", &AuthFailedPayload {
                 reason: "Unknown authentication method".into(),
@@ -381,6 +386,34 @@ async fn authenticate_password(
     // Get role IDs
     let role_ids = get_user_role_ids(pool, user.id).await;
 
+    Ok((user.clone(), user.org_id, role_ids))
+}
+
+/// Single-use ticket from the Discord browser login (see server/discord.rs).
+async fn authenticate_discord(
+    pool: &sqlx::PgPool,
+    ticket: &str,
+    org_tag: &str,
+) -> Result<(db::models::User, i32, Vec<i32>), String> {
+    let user_id = super::discord::redeem_ticket(ticket)
+        .ok_or_else(|| "Discord login expired or already used. Please try again.".to_string())?;
+    let user = db::users::find_by_id(pool, user_id)
+        .await
+        .map_err(|_| "Internal error".to_string())?
+        .ok_or_else(|| "Account not found".to_string())?;
+    if !user.is_active.unwrap_or(true) {
+        return Err("Account is disabled".to_string());
+    }
+    // The ticket was issued for a specific org; make sure the client is logging into that one
+    let (tag,): (String,) = sqlx::query_as("SELECT tag FROM organizations WHERE id = $1")
+        .bind(user.org_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| "Internal error".to_string())?;
+    if !org_tag.is_empty() && !tag.eq_ignore_ascii_case(org_tag) {
+        return Err("This Discord login was for a different organisation".to_string());
+    }
+    let role_ids = get_user_role_ids(pool, user.id).await;
     Ok((user.clone(), user.org_id, role_ids))
 }
 
