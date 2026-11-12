@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QTableWidget>
+#include <QPushButton>
 #include <QMap>
 
 #include "config/config.h"
@@ -52,7 +53,6 @@ private:
     void loadHotkeyTable();
     void loadChannelAudioTable();
 
-    static QString vkCodeToName(int vkCode);
 
     AppConfig& m_config;
     AudioEngine* m_audioEngine;
@@ -80,7 +80,10 @@ private:
     // Hotkey tab
     QTableWidget* m_hotkeyTable = nullptr;
     QComboBox* m_hotkeyChannelCombo = nullptr;
-    QComboBox* m_hotkeyKeyCombo = nullptr;
+    QPushButton* m_bindButton = nullptr;   // "Press to bind…" capture button
+    QLabel* m_joystickStatus = nullptr;    // "2 joysticks detected"
+    void updateJoystickStatus();
+    void finishCapture();
 
     // Channel Audio tab
     QTableWidget* m_channelAudioTable = nullptr;

@@ -83,17 +83,15 @@ MainWindow::MainWindow(AppConfig& config, WebSocketClient* wsClient,
     m_voiceSession.setInputVolume(config.audio.inputVolume);
     m_voiceSession.setOutputVolume(config.audio.outputVolume);
 
-    // Install PTT keyboard hook — all keys come from saved per-channel hotkeys
-    // Load saved per-channel hotkeys from config
+    // Load saved per-channel PTT bindings (keyboard, mouse buttons, joystick/HOTAS)
     for (auto it = config.hotkeys.constBegin(); it != config.hotkeys.constEnd(); ++it) {
-        int vkCode = it.key().toInt();
-        int chId = it.value();
-        if (vkCode > 0 && chId > 0) {
-            m_pttManager.setHotkey(chId, vkCode);
+        if (it.value() > 0) {
+            m_pttManager.setBinding(it.key(), it.value());
         }
     }
 
-    m_pttManager.install();
+    // Global keyboard + mouse hooks, and DirectInput joysticks (needs our window handle)
+    m_pttManager.install(reinterpret_cast<void*>(winId()));
 
     // Load saved per-channel audio settings into voice session
     m_voiceSession.setDuckingEnabled(config.voice.duckingEnabled);
@@ -612,7 +610,7 @@ void MainWindow::onChannelLeaveRequested(int channelId) {
     m_joinedChannels.remove(channelId);
     m_channelRosters.remove(channelId);
     m_channelTree->removeJoinedChannel(channelId);
-    m_pttManager.removeHotkey(channelId);
+    // PTT binding is kept so it works again on rejoin; onPttStateChanged ignores unjoined channels.
     m_voiceSession.setOpenMic(static_cast<uint32_t>(channelId), false);
 
     if (channelId == m_viewedChannelId) {

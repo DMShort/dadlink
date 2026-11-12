@@ -161,8 +161,9 @@ QWidget* SettingsDialog::createHotkeyTab() {
 
     // Info label
     auto* info = new QLabel(
-        "Assign a PTT key to each channel. The default key transmits to "
-        "the currently viewed channel. Per-channel keys transmit directly to that channel.", this);
+        "Assign a push-to-talk input to each channel: a keyboard key, a mouse side/middle "
+        "button, or any joystick / HOTAS button. Pick a channel, click \"Press to bind\", "
+        "then press the key or button you want. Inputs work while Star Citizen has focus.", this);
     info->setWordWrap(true);
     info->setStyleSheet("padding: 4px; color: #ccc;");
     layout->addWidget(info);
@@ -172,10 +173,10 @@ QWidget* SettingsDialog::createHotkeyTab() {
     auto* groupLayout = new QVBoxLayout(group);
 
     m_hotkeyTable = new QTableWidget(0, 3, this);
-    m_hotkeyTable->setHorizontalHeaderLabels({"Channel", "Key", ""});
+    m_hotkeyTable->setHorizontalHeaderLabels({"Channel", "Input", ""});
     m_hotkeyTable->horizontalHeader()->setStretchLastSection(false);
     m_hotkeyTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_hotkeyTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_hotkeyTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_hotkeyTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_hotkeyTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_hotkeyTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -196,55 +197,59 @@ QWidget* SettingsDialog::createHotkeyTab() {
     addLayout->addWidget(new QLabel("Channel:", this));
     addLayout->addWidget(m_hotkeyChannelCombo);
 
-    m_hotkeyKeyCombo = new QComboBox(this);
-    // Populate with common keys
-    struct KeyEntry { int vk; const char* name; };
-    static const KeyEntry keys[] = {
-        {0x70, "F1"}, {0x71, "F2"}, {0x72, "F3"}, {0x73, "F4"},
-        {0x74, "F5"}, {0x75, "F6"}, {0x76, "F7"}, {0x77, "F8"},
-        {0x78, "F9"}, {0x79, "F10"}, {0x7A, "F11"}, {0x7B, "F12"},
-        {0x14, "Caps Lock"}, {0xA0, "Left Shift"}, {0xA1, "Right Shift"},
-        {0xA2, "Left Ctrl"}, {0xA3, "Right Ctrl"}, {0xA4, "Left Alt"}, {0xA5, "Right Alt"},
-        {0xC0, "~ (Tilde)"}, {0xDC, "\\ (Backslash)"},
-        {0x6A, "Numpad *"}, {0x6B, "Numpad +"}, {0x6D, "Numpad -"},
-        {0x60, "Numpad 0"}, {0x61, "Numpad 1"}, {0x62, "Numpad 2"},
-        {0x63, "Numpad 3"}, {0x64, "Numpad 4"}, {0x65, "Numpad 5"},
-        {0x66, "Numpad 6"}, {0x67, "Numpad 7"}, {0x68, "Numpad 8"}, {0x69, "Numpad 9"},
-        {0x05, "Mouse X1"}, {0x06, "Mouse X2"},
-    };
-    for (const auto& k : keys) {
-        m_hotkeyKeyCombo->addItem(k.name, k.vk);
-    }
-    addLayout->addWidget(new QLabel("Key:", this));
-    addLayout->addWidget(m_hotkeyKeyCombo);
-
-    auto* addBtn = new QPushButton("Add", this);
-    addLayout->addWidget(addBtn);
+    m_bindButton = new QPushButton("Press to bind…", this);
+    m_bindButton->setMinimumWidth(260);
+    addLayout->addWidget(m_bindButton, 1);
     groupLayout->addLayout(addLayout);
 
-    connect(addBtn, &QPushButton::clicked, this, [this]() {
-        int channelId = m_hotkeyChannelCombo->currentData().toInt();
-        int vkCode = m_hotkeyKeyCombo->currentData().toInt();
-        if (channelId <= 0 || vkCode <= 0) return;
+    // Joystick status + rescan
+    auto* joyLayout = new QHBoxLayout();
+    m_joystickStatus = new QLabel(this);
+    m_joystickStatus->setStyleSheet("color: #aaa;");
+    auto* rescanBtn = new QPushButton("Rescan joysticks", this);
+    joyLayout->addWidget(m_joystickStatus, 1);
+    joyLayout->addWidget(rescanBtn);
+    groupLayout->addLayout(joyLayout);
+    updateJoystickStatus();
 
-        // Update PttManager immediately
-        if (m_pttManager) {
-            m_pttManager->setHotkey(channelId, vkCode);
-        }
-
-        // Save to config — remove any existing binding for this channel
-        for (auto it = m_config.hotkeys.begin(); it != m_config.hotkeys.end(); ) {
-            if (it.value() == channelId) {
-                it = m_config.hotkeys.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        m_config.hotkeys[QString::number(vkCode)] = channelId;
-
-        // Refresh table
-        loadHotkeyTable();
+    connect(rescanBtn, &QPushButton::clicked, this, [this]() {
+        if (m_pttManager) m_pttManager->rescanJoysticks();
+        updateJoystickStatus();
+        loadHotkeyTable(); // device names may now resolve
     });
+
+    connect(m_bindButton, &QPushButton::clicked, this, [this]() {
+        if (!m_pttManager) return;
+        if (m_pttManager->isCapturing()) { m_pttManager->cancelCapture(); return; }
+        if (m_hotkeyChannelCombo->currentData().toInt() <= 0) return;
+        m_bindButton->setText("Press a key, mouse or stick button…  (Esc to cancel)");
+        m_bindButton->setStyleSheet("background: #4a3000; color: #ffa500; font-weight: bold;");
+        m_pttManager->startCapture();
+    });
+
+    if (m_pttManager) {
+        connect(m_pttManager, &PttManager::bindingCaptured, this, [this](const QString& binding) {
+            finishCapture();
+            int channelId = m_hotkeyChannelCombo->currentData().toInt();
+            if (channelId <= 0 || binding.isEmpty()) return;
+
+            m_pttManager->setBinding(binding, channelId);
+
+            // Save to config: one input per channel, one channel per input
+            const QString key = PttManager::normalizeBinding(binding);
+            for (auto it = m_config.hotkeys.begin(); it != m_config.hotkeys.end(); ) {
+                if (it.value() == channelId || PttManager::normalizeBinding(it.key()) == key)
+                    it = m_config.hotkeys.erase(it);
+                else
+                    ++it;
+            }
+            m_config.hotkeys[key] = channelId;
+            loadHotkeyTable();
+        });
+        connect(m_pttManager, &PttManager::captureCancelled, this, [this]() { finishCapture(); });
+        // Don't leave the manager in capture mode if the dialog closes mid-capture
+        connect(this, &QDialog::finished, m_pttManager, &PttManager::cancelCapture);
+    }
 
     layout->addWidget(group);
     layout->addStretch();
@@ -449,28 +454,42 @@ void SettingsDialog::loadHotkeyTable() {
     }
 
     for (auto it = m_config.hotkeys.constBegin(); it != m_config.hotkeys.constEnd(); ++it) {
-        int vkCode = it.key().toInt();
+        const QString binding = it.key();
         int channelId = it.value();
-        if (vkCode <= 0 || channelId <= 0) continue;
+        if (binding.isEmpty() || channelId <= 0) continue;
 
         int row = m_hotkeyTable->rowCount();
         m_hotkeyTable->insertRow(row);
 
         QString chName = channelNameMap.value(channelId, QString("#%1").arg(channelId));
+        QString inputName = m_pttManager ? m_pttManager->displayName(binding) : binding;
         m_hotkeyTable->setItem(row, 0, new QTableWidgetItem(chName));
-        m_hotkeyTable->setItem(row, 1, new QTableWidgetItem(vkCodeToName(vkCode)));
+        m_hotkeyTable->setItem(row, 1, new QTableWidgetItem(inputName));
 
         auto* removeBtn = new QPushButton("Remove", this);
         m_hotkeyTable->setCellWidget(row, 2, removeBtn);
 
-        connect(removeBtn, &QPushButton::clicked, this, [this, vkCode, channelId]() {
-            m_config.hotkeys.remove(QString::number(vkCode));
+        connect(removeBtn, &QPushButton::clicked, this, [this, binding, channelId]() {
+            m_config.hotkeys.remove(binding);
             if (m_pttManager) {
                 m_pttManager->removeHotkey(channelId);
             }
             loadHotkeyTable();
         });
     }
+}
+
+void SettingsDialog::finishCapture() {
+    if (!m_bindButton) return;
+    m_bindButton->setText("Press to bind…");
+    m_bindButton->setStyleSheet("");
+}
+
+void SettingsDialog::updateJoystickStatus() {
+    if (!m_joystickStatus) return;
+    int n = m_pttManager ? m_pttManager->joystickCount() : 0;
+    m_joystickStatus->setText(n == 0 ? QStringLiteral("No joysticks detected")
+                                     : QStringLiteral("%1 joystick/HOTAS device%2 detected").arg(n).arg(n == 1 ? "" : "s"));
 }
 
 void SettingsDialog::saveToConfig() {
@@ -520,19 +539,3 @@ void SettingsDialog::onOk() {
     accept();
 }
 
-QString SettingsDialog::vkCodeToName(int vkCode) {
-    static const QMap<int, QString> names = {
-        {0x70, "F1"}, {0x71, "F2"}, {0x72, "F3"}, {0x73, "F4"},
-        {0x74, "F5"}, {0x75, "F6"}, {0x76, "F7"}, {0x77, "F8"},
-        {0x78, "F9"}, {0x79, "F10"}, {0x7A, "F11"}, {0x7B, "F12"},
-        {0x14, "Caps Lock"}, {0xA0, "Left Shift"}, {0xA1, "Right Shift"},
-        {0xA2, "Left Ctrl"}, {0xA3, "Right Ctrl"}, {0xA4, "Left Alt"}, {0xA5, "Right Alt"},
-        {0xC0, "~ (Tilde)"}, {0xDC, "\\ (Backslash)"},
-        {0x6A, "Numpad *"}, {0x6B, "Numpad +"}, {0x6D, "Numpad -"},
-        {0x60, "Numpad 0"}, {0x61, "Numpad 1"}, {0x62, "Numpad 2"},
-        {0x63, "Numpad 3"}, {0x64, "Numpad 4"}, {0x65, "Numpad 5"},
-        {0x66, "Numpad 6"}, {0x67, "Numpad 7"}, {0x68, "Numpad 8"}, {0x69, "Numpad 9"},
-        {0x05, "Mouse X1"}, {0x06, "Mouse X2"},
-    };
-    return names.value(vkCode, QString("Key 0x%1").arg(vkCode, 2, 16, QChar('0')).toUpper());
-}
