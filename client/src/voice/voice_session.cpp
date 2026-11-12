@@ -260,7 +260,7 @@ void VoiceSession::onTransmitTimer() {
     auto encoded = m_opusCodec.encode(pcm, AudioEngine::FramesPerBuffer);
     if (encoded.empty()) { qDebug() << "[TX] Opus encode failed"; return; }
 
-    auto encrypted = m_srtpSession->encrypt(encoded.data(), encoded.size(), m_txSequence);
+    auto encrypted = m_srtpSession->encrypt(encoded.data(), encoded.size(), m_txSequence, m_userId);
     if (encrypted.empty()) { qDebug() << "[TX] SRTP encrypt failed"; return; }
 
     // Build the set of channels to transmit to this tick:
@@ -302,7 +302,7 @@ void VoiceSession::sendKeepalive() {
     if (m_channelId == 0 || !m_srtpSession || !m_srtpSession->isReady()) return;
 
     const uint8_t dummy = 0;
-    auto encrypted = m_srtpSession->encrypt(&dummy, 0, m_txSequence); // empty payload, tag only
+    auto encrypted = m_srtpSession->encrypt(&dummy, 0, m_txSequence, m_userId); // empty payload, tag only
     if (encrypted.empty()) return;
 
     VoicePacket pkt;
@@ -355,7 +355,7 @@ void VoiceSession::processReceivedPacket(const QByteArray& data) {
 
     // SRTP decrypt
     auto decrypted = m_srtpSession->decrypt(
-        pkt->payload.data(), pkt->payload.size(), pkt->sequence);
+        pkt->payload.data(), pkt->payload.size(), pkt->sequence, pkt->userId);
 
     if (decrypted.empty()) {
         qDebug() << "[RX] SRTP decrypt failed for seq=" << pkt->sequence;

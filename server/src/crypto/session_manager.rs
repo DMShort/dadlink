@@ -64,14 +64,14 @@ impl SrtpSessionManager {
             .ok_or(super::srtp_session::SrtpError::DecryptionFailed)?;
 
         // Try current key first
-        if let Ok(plaintext) = entry.current.decrypt(ciphertext, sequence) {
+        if let Ok(plaintext) = entry.current.decrypt(ciphertext, sequence, user_id as u32) {
             return Ok(plaintext);
         }
 
         // Try previous key if within dual-key window
         if let Some((ref prev, rotation_time)) = entry.previous {
             if rotation_time.elapsed() < self.dual_key_window {
-                return prev.decrypt(ciphertext, sequence);
+                return prev.decrypt(ciphertext, sequence, user_id as u32);
             }
         }
 
