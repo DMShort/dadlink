@@ -59,6 +59,7 @@ set(HEADERS
     src/crypto/key_exchange.h
     src/crypto/srtp_session.h
     src/audio/ring_buffer.h
+    src/audio/radio_filter.h
     src/audio/audio_engine.h
     src/audio/opus_codec.h
     src/voice/voice_packet.h

@@ -101,6 +101,8 @@ MainWindow::MainWindow(AppConfig& config, WebSocketClient* wsClient,
         m_voiceSession.setChannelVolume(chId, it.value().volume);
         m_voiceSession.setChannelPriority(chId, it.value().priority);
         m_voiceSession.setChannelMuted(chId, it.value().muted);
+        m_voiceSession.setChannelPan(chId, it.value().pan);
+        m_voiceSession.setChannelRadioFilter(chId, it.value().radioFilter);
     }
 
     // Restore window geometry

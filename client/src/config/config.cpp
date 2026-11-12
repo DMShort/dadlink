@@ -143,6 +143,8 @@ QJsonObject AppConfig::channelAudioToJson() const {
         ch["priority"]  = it.value().priority;
         ch["muted"]     = it.value().muted;
         ch["open_mic"]  = it.value().openMic;
+        ch["pan"]       = static_cast<double>(it.value().pan);
+        ch["radio"]     = it.value().radioFilter;
         obj[QString::number(it.key())] = ch;
     }
     return obj;
@@ -224,6 +226,8 @@ void AppConfig::channelAudioFromJson(const QJsonObject& obj) {
         cfg.priority = ch["priority"].toInt(5);
         cfg.muted    = ch["muted"].toBool(false);
         cfg.openMic  = ch["open_mic"].toBool(false);
+        cfg.pan      = static_cast<float>(ch["pan"].toDouble(0.0));
+        cfg.radioFilter = ch["radio"].toBool(false);
         channelAudio[channelId] = cfg;
     }
 }

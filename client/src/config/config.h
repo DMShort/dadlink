@@ -25,6 +25,8 @@ struct ChannelAudioConfig {
     int priority = 5;     // 1 = highest, 10 = lowest
     bool muted = false;
     bool openMic = false;  // always transmit in this channel (no PTT required)
+    float pan = 0.0f;      // -1 left, 0 centre, +1 right
+    bool radioFilter = false; // comms-radio voice effect
 };
 
 struct VoiceSettings {

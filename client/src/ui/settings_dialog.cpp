@@ -4,6 +4,7 @@
 #include "ui/channel_tree.h"
 #include "voice/voice_session.h"
 
+#include <cmath>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -29,7 +30,7 @@ SettingsDialog::SettingsDialog(AppConfig& config, AudioEngine* audioEngine,
 
 void SettingsDialog::setupUi() {
     setWindowTitle("Settings");
-    setMinimumWidth(450);
+    setMinimumWidth(720); // Channel Audio table has 6 columns
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
     auto* mainLayout = new QVBoxLayout(this);
@@ -262,8 +263,9 @@ QWidget* SettingsDialog::createChannelAudioTab() {
 
     // Info label
     auto* info = new QLabel(
-        "Set per-channel volume and priority. Higher priority channels (lower number) "
-        "will duck lower-priority channels when active.", this);
+        "Set per-channel volume, priority, stereo position and radio effect. Higher priority "
+        "channels (lower number) duck lower-priority channels when active. Placing nets left, "
+        "centre and right, and giving some the radio effect, lets you tell them apart by ear.", this);
     info->setWordWrap(true);
     info->setStyleSheet("padding: 4px; color: #ccc;");
     layout->addWidget(info);
@@ -272,15 +274,16 @@ QWidget* SettingsDialog::createChannelAudioTab() {
     auto* group = new QGroupBox("Channel Audio Settings", this);
     auto* groupLayout = new QVBoxLayout(group);
 
-    m_channelAudioTable = new QTableWidget(0, 4, this);
-    m_channelAudioTable->setHorizontalHeaderLabels({"Channel", "Volume", "Priority", "Muted"});
+    m_channelAudioTable = new QTableWidget(0, 6, this);
+    m_channelAudioTable->setHorizontalHeaderLabels({"Channel", "Volume", "Priority", "Muted", "Pan", "Radio"});
     m_channelAudioTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_channelAudioTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
-    m_channelAudioTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
-    m_channelAudioTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
-    m_channelAudioTable->setColumnWidth(1, 160);
-    m_channelAudioTable->setColumnWidth(2, 80);
-    m_channelAudioTable->setColumnWidth(3, 60);
+    for (int c = 1; c <= 5; ++c)
+        m_channelAudioTable->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Fixed);
+    m_channelAudioTable->setColumnWidth(1, 140);
+    m_channelAudioTable->setColumnWidth(2, 70);
+    m_channelAudioTable->setColumnWidth(3, 55);
+    m_channelAudioTable->setColumnWidth(4, 170);
+    m_channelAudioTable->setColumnWidth(5, 55);
     m_channelAudioTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_channelAudioTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_channelAudioTable->verticalHeader()->hide();
@@ -387,6 +390,53 @@ void SettingsDialog::loadChannelAudioTable() {
             m_config.channelAudio[channelId].muted = muted;
             if (m_voiceSession) {
                 m_voiceSession->setChannelMuted(static_cast<uint32_t>(channelId), muted);
+            }
+        });
+
+        // Pan: slider -100..100 with L/C/R readout; snaps to centre near 0
+        auto* panContainer = new QWidget(this);
+        auto* panLayout = new QHBoxLayout(panContainer);
+        panLayout->setContentsMargins(4, 0, 4, 0);
+        auto* panSlider = new QSlider(Qt::Horizontal, this);
+        panSlider->setRange(-100, 100);
+        panSlider->setPageStep(50);
+        panSlider->setValue(static_cast<int>(std::lround(cfg.pan * 100)));
+        auto* panLabel = new QLabel(this);
+        panLabel->setMinimumWidth(34);
+        auto panText = [](int v) {
+            if (v == 0) return QStringLiteral("C");
+            return QStringLiteral("%1%2").arg(v < 0 ? "L" : "R").arg(std::abs(v));
+        };
+        panLabel->setText(panText(panSlider->value()));
+        panLayout->addWidget(panSlider, 1);
+        panLayout->addWidget(panLabel);
+        m_channelAudioTable->setCellWidget(row, 4, panContainer);
+
+        connect(panSlider, &QSlider::valueChanged, this, [this, channelId, panSlider, panLabel, panText](int val) {
+            if (val != 0 && std::abs(val) < 8) { panSlider->setValue(0); return; } // detent at centre
+            panLabel->setText(panText(val));
+            float pan = val / 100.0f;
+            m_config.channelAudio[channelId].pan = pan;
+            if (m_voiceSession) {
+                m_voiceSession->setChannelPan(static_cast<uint32_t>(channelId), pan);
+            }
+        });
+
+        // Radio effect checkbox
+        auto* radioCheck = new QCheckBox(this);
+        radioCheck->setChecked(cfg.radioFilter);
+        radioCheck->setToolTip("Comms-radio voice effect (band-pass + light distortion)");
+        auto* radioContainer = new QWidget(this);
+        auto* radioLayout = new QHBoxLayout(radioContainer);
+        radioLayout->addWidget(radioCheck);
+        radioLayout->setAlignment(Qt::AlignCenter);
+        radioLayout->setContentsMargins(0, 0, 0, 0);
+        m_channelAudioTable->setCellWidget(row, 5, radioContainer);
+
+        connect(radioCheck, &QCheckBox::toggled, this, [this, channelId](bool on) {
+            m_config.channelAudio[channelId].radioFilter = on;
+            if (m_voiceSession) {
+                m_voiceSession->setChannelRadioFilter(static_cast<uint32_t>(channelId), on);
             }
         });
     }
