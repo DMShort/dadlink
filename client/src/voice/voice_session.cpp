@@ -202,6 +202,16 @@ void VoiceSession::setChannelMuted(uint32_t channelId, bool muted) {
     m_channelSettings[channelId].muted = muted;
 }
 
+std::vector<VoiceSession::ActiveSpeaker> VoiceSession::activeSpeakers(int windowMs) {
+    const auto cutoff = std::chrono::steady_clock::now() - std::chrono::milliseconds(windowMs);
+    std::vector<ActiveSpeaker> out;
+    std::lock_guard<std::mutex> lock(m_sourcesMutex);
+    for (const auto& [userId, src] : m_sources) {
+        if (src && src->lastPacket >= cutoff) out.push_back({userId, src->channelId});
+    }
+    return out;
+}
+
 void VoiceSession::setChannelPan(uint32_t channelId, float pan) {
     std::lock_guard<std::mutex> lock(m_channelSettingsMutex);
     m_channelSettings[channelId].pan = std::clamp(pan, -1.0f, 1.0f);
@@ -360,6 +370,7 @@ void VoiceSession::processReceivedPacket(const QByteArray& data) {
         source->decoder.initialize();
     }
     source->channelId = pkt->channelId; // track which channel this source is on
+    source->lastPacket = std::chrono::steady_clock::now();
 
     source->jitterBuffer.push(pkt->sequence, pkt->timestamp, std::move(decrypted));
 }

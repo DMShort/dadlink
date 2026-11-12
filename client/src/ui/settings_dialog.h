@@ -50,7 +50,12 @@ public:
     /// channel_id -> net name for live op nets; PTT bound to these is also saved by net name
     /// so it carries over to the same net in future ops.
     void setOpNetNames(const QMap<int, QString>& names) { m_opNetNames = names; }
+    /// Overlay to preview/apply live from the Overlay tab.
+    void setOverlay(class TalkOverlay* overlay) { m_overlay = overlay; }
 private:
+    QWidget* createOverlayTab();
+    void applyOverlay();
+    class TalkOverlay* m_overlay = nullptr;
     QMap<int, QString> m_opNetNames;
     QWidget* createChannelAudioTab();
     QWidget* createNetworkTab();

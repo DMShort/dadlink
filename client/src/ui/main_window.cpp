@@ -7,6 +7,7 @@
 #include "network/websocket_client.h"
 #include "ui/admin/admin_panel.h"
 #include "ui/ops/ops_manager.h"
+#include "ui/overlay/talk_overlay.h"
 
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -74,6 +75,14 @@ MainWindow::MainWindow(AppConfig& config, WebSocketClient* wsClient,
             // Not admin — silently ignore
         }
     );
+
+    // Who's-talking overlay
+    m_overlay = new TalkOverlay(m_config.overlay);
+    connect(this, &QObject::destroyed, m_overlay, &QObject::deleteLater);
+    m_overlayTimer = new QTimer(this);
+    m_overlayTimer->setInterval(100);
+    connect(m_overlayTimer, &QTimer::timeout, this, &MainWindow::refreshOverlay);
+    m_overlayTimer->start();
 
     // Probe the ops API: Admins and Op Leaders get an Ops menu
     m_adminApi.listOpTemplates(
@@ -250,6 +259,7 @@ void MainWindow::setupMenuBar() {
         SettingsDialog dialog(m_config, &m_voiceSession.audioEngine(),
                               &m_pttManager, m_channelTree, &m_voiceSession, this);
         dialog.setOpNetNames(m_opNetNames);
+        dialog.setOverlay(m_overlay);
         connect(&dialog, &SettingsDialog::audioSettingsChanged, this, [this]() {
             m_voiceSession.setInputVolume(m_config.audio.inputVolume);
             m_voiceSession.setOutputVolume(m_config.audio.outputVolume);
@@ -738,7 +748,8 @@ void MainWindow::onPttStateChanged(bool active, int channelId) {
 
         // Listen-only net: don't open the mic, and say why
         if (m_listenOnly.contains(targetChannel)) {
-            QString net = m_opNetNames.value(targetChannel, QString("#%1").arg(targetChannel));
+            m_listenOnlyPress = targetChannel;
+            QString net = channelLabel(targetChannel);
             m_pttIndicator->setText(QString("LISTEN ONLY: %1").arg(net));
             m_pttIndicator->setStyleSheet("background: #4a3000; color: #ffa500; border-radius: 4px; padding: 4px; font-weight: bold;");
             return;
@@ -747,14 +758,59 @@ void MainWindow::onPttStateChanged(bool active, int channelId) {
         // Switch voice session to target channel (no jitter buffer clear)
         m_voiceSession.setTransmitChannel(static_cast<uint32_t>(targetChannel));
         m_voiceSession.setPttActive(true);
+        m_txChannel = targetChannel;
 
-        m_pttIndicator->setText(QString("PTT: CH #%1").arg(targetChannel));
+        m_pttIndicator->setText(QString("PTT: %1").arg(channelLabel(targetChannel)));
         m_pttIndicator->setStyleSheet("background: #004400; color: #00ff00; border-radius: 4px; padding: 4px; font-weight: bold;");
     } else {
         m_voiceSession.setPttActive(false);
+        m_txChannel = -1;
+        m_listenOnlyPress = -1;
         m_pttIndicator->setText("PTT: OFF");
         m_pttIndicator->setStyleSheet("background: #333; color: #888; border-radius: 4px; padding: 4px;");
     }
+}
+
+// --- Overlay ---
+
+QString MainWindow::displayNameFor(int userId) const {
+    for (auto it = m_channelRosters.constBegin(); it != m_channelRosters.constEnd(); ++it) {
+        for (const auto& v : it.value()) {
+            QJsonObject u = v.toObject();
+            if (u["id"].toInt() != userId) continue;
+            QString n = u["display_name"].toString();
+            return n.isEmpty() ? u["username"].toString() : n;
+        }
+    }
+    return QString("User #%1").arg(userId);
+}
+
+QString MainWindow::channelLabel(int channelId) const {
+    if (m_opNetNames.contains(channelId)) return m_opNetNames.value(channelId);
+    QString name = m_channelTree ? m_channelTree->channelNames().value(channelId) : QString();
+    return name.isEmpty() ? QString("#%1").arg(channelId) : name;
+}
+
+void MainWindow::refreshOverlay() {
+    if (!m_overlay) return;
+    std::vector<TalkOverlay::Row> rows;
+
+    if (m_txChannel >= 0) {
+        rows.push_back({TalkOverlay::Kind::SelfTx, channelLabel(m_txChannel), {}});
+    } else if (m_listenOnlyPress >= 0) {
+        rows.push_back({TalkOverlay::Kind::SelfListenOnly, channelLabel(m_listenOnlyPress), {}});
+    }
+
+    if (!m_deafened) {
+        for (const auto& sp : m_voiceSession.activeSpeakers()) {
+            const int ch = static_cast<int>(sp.channelId);
+            const int uid = static_cast<int>(sp.userId);
+            if (uid == m_userId || !m_joinedChannels.contains(ch)) continue;
+            if (m_config.channelAudio.contains(ch) && m_config.channelAudio[ch].muted) continue; // not heard
+            rows.push_back({TalkOverlay::Kind::Speaker, channelLabel(ch), displayNameFor(uid)});
+        }
+    }
+    m_overlay->setRows(std::move(rows));
 }
 
 // --- Ops ---

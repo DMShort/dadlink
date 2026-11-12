@@ -44,6 +44,17 @@ bool AppConfig::load(const QString& path) {
     if (root.contains("hotkeys"))       hotkeysFromJson(root["hotkeys"].toObject());
     if (root.contains("channel_audio")) channelAudioFromJson(root["channel_audio"].toObject());
     if (root.contains("ui"))            uiFromJson(root["ui"].toObject());
+    if (root.contains("overlay")) {
+        QJsonObject o = root["overlay"].toObject();
+        overlay.enabled  = o["enabled"].toBool(true);
+        overlay.corner   = o["corner"].toString("top-right");
+        overlay.offsetX  = o["offset_x"].toInt(24);
+        overlay.offsetY  = o["offset_y"].toInt(140);
+        overlay.screen   = o["screen"].toInt(0);
+        overlay.scale    = o["scale"].toDouble(1.0);
+        overlay.opacity  = o["opacity"].toDouble(0.85);
+        overlay.showIdle = o["show_idle"].toBool(false);
+    }
     opNetHotkeys.clear();
     if (root.contains("op_net_hotkeys")) {
         QJsonObject o = root["op_net_hotkeys"].toObject();
@@ -68,6 +79,16 @@ bool AppConfig::save(const QString& path) const {
     QJsonObject opKeys;
     for (auto it = opNetHotkeys.constBegin(); it != opNetHotkeys.constEnd(); ++it) opKeys[it.key()] = it.value();
     root["op_net_hotkeys"] = opKeys;
+    QJsonObject ov;
+    ov["enabled"]   = overlay.enabled;
+    ov["corner"]    = overlay.corner;
+    ov["offset_x"]  = overlay.offsetX;
+    ov["offset_y"]  = overlay.offsetY;
+    ov["screen"]    = overlay.screen;
+    ov["scale"]     = overlay.scale;
+    ov["opacity"]   = overlay.opacity;
+    ov["show_idle"] = overlay.showIdle;
+    root["overlay"] = ov;
 
     QJsonDocument doc(root);
 
