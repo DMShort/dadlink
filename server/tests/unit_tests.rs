@@ -320,10 +320,10 @@ fn srtp_encrypt_decrypt_roundtrip() {
     let plaintext = b"opus audio frame data here";
     let seq = 42u64;
 
-    let ciphertext = session_a.encrypt(plaintext, seq).unwrap();
+    let ciphertext = session_a.encrypt(plaintext, seq, 7).unwrap();
     assert_ne!(&ciphertext[..], plaintext);
 
-    let decrypted = session_b.decrypt(&ciphertext, seq).unwrap();
+    let decrypted = session_b.decrypt(&ciphertext, seq, 7).unwrap();
     assert_eq!(&decrypted[..], plaintext);
 }
 
@@ -340,13 +340,31 @@ fn srtp_wrong_sequence_rejects() {
     let keys2 = key_exchange::derive_keys(shared2.as_bytes());
     let session2 = SrtpSession::new(&keys2);
 
-    let ciphertext = session.encrypt(b"test data", 1).unwrap();
+    let ciphertext = session.encrypt(b"test data", 1, 7).unwrap();
 
     // Correct sequence works
-    assert!(session2.decrypt(&ciphertext, 1).is_ok());
+    assert!(session2.decrypt(&ciphertext, 1, 7).is_ok());
 
     // Wrong sequence → auth failure
-    assert!(session2.decrypt(&ciphertext, 2).is_err());
+    assert!(session2.decrypt(&ciphertext, 2, 7).is_err());
+
+    // Wrong speaker id → auth failure (speaker id is part of the nonce)
+    assert!(session2.decrypt(&ciphertext, 1, 8).is_err());
+}
+
+#[test]
+fn srtp_nonce_differs_per_speaker() {
+    // Two speakers re-encrypted for the same listener with the same sequence number must
+    // produce different keystreams (no AES-GCM nonce reuse).
+    let (secret_a, _) = key_exchange::generate_keypair();
+    let (_, pub_b) = key_exchange::generate_keypair();
+    let shared = key_exchange::compute_shared_secret(secret_a, &pub_b);
+    let session = SrtpSession::new(&key_exchange::derive_keys(shared.as_bytes()));
+
+    let frame = [0u8; 32];
+    let from_alice = session.encrypt(&frame, 100, 1).unwrap();
+    let from_bob = session.encrypt(&frame, 100, 2).unwrap();
+    assert_ne!(from_alice, from_bob, "same seq from different speakers must not share a nonce");
 }
 
 #[test]
@@ -362,11 +380,11 @@ fn srtp_tampered_ciphertext_rejects() {
     let keys2 = key_exchange::derive_keys(shared2.as_bytes());
     let session2 = SrtpSession::new(&keys2);
 
-    let mut ciphertext = session.encrypt(b"secret", 5).unwrap();
+    let mut ciphertext = session.encrypt(b"secret", 5, 7).unwrap();
     // Flip a bit
     ciphertext[0] ^= 0xFF;
 
-    assert!(session2.decrypt(&ciphertext, 5).is_err());
+    assert!(session2.decrypt(&ciphertext, 5, 7).is_err());
 }
 
 // ─── Rate limiter ────────────────────────────────────────────────────────────

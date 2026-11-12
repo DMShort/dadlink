@@ -44,7 +44,8 @@ public:
     void listRoles(SuccessCallback onSuccess, ErrorCallback onError);
     void createRole(const QString& name, int permissions, int priority,
                     const QString& color,
-                    SuccessCallback onSuccess, ErrorCallback onError);
+                    SuccessCallback onSuccess, ErrorCallback onError,
+                    const QString& discordRoleId = QString());
     void updateRole(int roleId, const QJsonObject& fields,
                     SuccessCallback onSuccess, ErrorCallback onError);
     void deleteRole(int roleId, SuccessCallback onSuccess, ErrorCallback onError);

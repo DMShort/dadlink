@@ -445,7 +445,11 @@ void AdminPanel::refreshRoles() {
             for (int i = 0; i < roles.size(); ++i) {
                 auto r = roles[i].toObject();
                 m_rolesTable->setItem(i, 0, new QTableWidgetItem(QString::number(r["id"].toInt())));
-                m_rolesTable->setItem(i, 1, new QTableWidgetItem(r["name"].toString()));
+                auto* nameItem = new QTableWidgetItem(r["name"].toString());
+                const QString discordRole = r["discord_role_id"].toString();
+                nameItem->setData(Qt::UserRole, discordRole);
+                if (!discordRole.isEmpty()) nameItem->setToolTip("Synced from Discord role " + discordRole);
+                m_rolesTable->setItem(i, 1, nameItem);
                 auto* permItem = new QTableWidgetItem(permissionNames(r["permissions"].toInt()));
                 permItem->setData(Qt::UserRole, r["permissions"].toInt());
                 m_rolesTable->setItem(i, 2, permItem);
@@ -469,10 +473,14 @@ void AdminPanel::onAddRole() {
     auto* color = new QLineEdit(&dialog);
     color->setPlaceholderText("#FF0000");
 
+    auto* discordRole = new QLineEdit(&dialog);
+    discordRole->setPlaceholderText("Optional: Discord role ID to sync from");
+
     form->addRow("Name:", name);
     auto permissions = addPermissionPicker(form, &dialog, 1 | 2);
     form->addRow("Priority:", priority);
     form->addRow("Color:", color);
+    form->addRow("Discord role ID:", discordRole);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     form->addRow(buttons);
@@ -483,7 +491,8 @@ void AdminPanel::onAddRole() {
 
     m_api->createRole(name->text(), permissions(), priority->value(), color->text(),
         [this](const QJsonObject&) { showSuccess("Role created"); refreshRoles(); },
-        [this](int, const QString& err) { showError("Failed to create role: " + err); }
+        [this](int, const QString& err) { showError("Failed to create role: " + err); },
+        discordRole->text()
     );
 }
 
@@ -508,10 +517,22 @@ void AdminPanel::onEditRole() {
     priority->setValue(cell(3).toInt());
     auto* color = new QLineEdit(cell(4), &dialog);
 
+    auto* discordRole = new QLineEdit(&dialog);
+    discordRole->setPlaceholderText("Optional: Discord role ID to sync from");
+    if (row >= 0 && m_rolesTable->item(row, 1))
+        discordRole->setText(m_rolesTable->item(row, 1)->data(Qt::UserRole).toString());
+
     form->addRow("Name:", name);
     auto permissions = addPermissionPicker(form, &dialog, currentPerms);
     form->addRow("Priority:", priority);
     form->addRow("Color:", color);
+    form->addRow("Discord role ID:", discordRole);
+    auto* discordHelp = new QLabel("Members with this Discord role get this role when they log in with Discord "
+                                   "(and lose it if the Discord role is removed). Discord: Developer Mode, "
+                                   "right-click role, Copy Role ID.", &dialog);
+    discordHelp->setWordWrap(true);
+    discordHelp->setStyleSheet("color: #999; font-size: 11px;");
+    form->addRow(discordHelp);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     form->addRow(buttons);
@@ -525,6 +546,7 @@ void AdminPanel::onEditRole() {
     fields["permissions"] = permissions();
     fields["priority"] = priority->value();
     if (!color->text().isEmpty()) fields["color"] = color->text();
+    fields["discord_role_id"] = discordRole->text().trimmed(); // "" clears
 
     m_api->updateRole(roleId, fields,
         [this](const QJsonObject&) { showSuccess("Role updated"); refreshRoles(); },
