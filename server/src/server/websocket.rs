@@ -554,7 +554,10 @@ async fn handle_join_channel(
 
     // Initiate SRTP key exchange on the first channel join per connection.
     // Subsequent joins skip this — only the periodic rotation task re-keys.
-    if !conn.srtp_initialized {
+    // Also skip while one is already in flight: a client that joins several channels
+    // back-to-back (e.g. "Join op") would otherwise get a fresh init per join, the server's
+    // secret would be overwritten, and the two sides would derive different keys (silence).
+    if !conn.srtp_initialized && conn.ke_secret.is_none() {
         let (ke_secret, server_public) = key_exchange::generate_keypair();
         conn.ke_secret = Some(ke_secret);
         let _ = tx.send(Envelope::new("key_exchange_init", &KeyExchangeInitPayload {
