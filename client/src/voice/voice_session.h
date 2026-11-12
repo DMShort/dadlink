@@ -7,7 +7,9 @@
 #include <QTimer>
 #include <atomic>
 #include <memory>
+#include <chrono>
 #include <map>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 
@@ -70,6 +72,13 @@ public:
     void setChannelVolume(uint32_t channelId, float volume);  // 0.0 – 1.0
     void setChannelPriority(uint32_t channelId, int priority); // 1 = highest
     void setChannelMuted(uint32_t channelId, bool muted);
+    struct ActiveSpeaker {
+        uint32_t userId;
+        uint32_t channelId;
+    };
+    /// Users whose voice packets arrived within the last windowMs (thread-safe).
+    std::vector<ActiveSpeaker> activeSpeakers(int windowMs = 350);
+
     void setChannelPan(uint32_t channelId, float pan);              // -1 = left, 0 = centre, +1 = right
     void setChannelRadioFilter(uint32_t channelId, bool enabled);   // comms-radio band-pass effect
     void removeChannelSettings(uint32_t channelId);
@@ -126,6 +135,7 @@ private:
         OpusCodec decoder;
         RadioFilter radio;      // per-speaker filter state (continuous across frames)
         uint32_t channelId = 0; // which channel this source is transmitting on
+        std::chrono::steady_clock::time_point lastPacket{}; // for "who's talking"
         SourceState() : jitterBuffer(20) {}
     };
     std::map<uint32_t, std::unique_ptr<SourceState>> m_sources;

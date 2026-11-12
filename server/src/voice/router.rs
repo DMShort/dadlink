@@ -133,7 +133,7 @@ pub async fn run_voice_server(
                     };
 
                     // Re-encrypt for recipient
-                    let encrypted = match encrypt_session.encrypt(&plaintext, packet.sequence) {
+                    let encrypted = match encrypt_session.encrypt(&plaintext, packet.sequence, sender_id as u32) {
                         Ok(e) => e,
                         Err(_) => return,
                     };

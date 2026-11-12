@@ -202,6 +202,16 @@ void VoiceSession::setChannelMuted(uint32_t channelId, bool muted) {
     m_channelSettings[channelId].muted = muted;
 }
 
+std::vector<VoiceSession::ActiveSpeaker> VoiceSession::activeSpeakers(int windowMs) {
+    const auto cutoff = std::chrono::steady_clock::now() - std::chrono::milliseconds(windowMs);
+    std::vector<ActiveSpeaker> out;
+    std::lock_guard<std::mutex> lock(m_sourcesMutex);
+    for (const auto& [userId, src] : m_sources) {
+        if (src && src->lastPacket >= cutoff) out.push_back({userId, src->channelId});
+    }
+    return out;
+}
+
 void VoiceSession::setChannelPan(uint32_t channelId, float pan) {
     std::lock_guard<std::mutex> lock(m_channelSettingsMutex);
     m_channelSettings[channelId].pan = std::clamp(pan, -1.0f, 1.0f);
@@ -250,7 +260,7 @@ void VoiceSession::onTransmitTimer() {
     auto encoded = m_opusCodec.encode(pcm, AudioEngine::FramesPerBuffer);
     if (encoded.empty()) { qDebug() << "[TX] Opus encode failed"; return; }
 
-    auto encrypted = m_srtpSession->encrypt(encoded.data(), encoded.size(), m_txSequence);
+    auto encrypted = m_srtpSession->encrypt(encoded.data(), encoded.size(), m_txSequence, m_userId);
     if (encrypted.empty()) { qDebug() << "[TX] SRTP encrypt failed"; return; }
 
     // Build the set of channels to transmit to this tick:
@@ -292,7 +302,7 @@ void VoiceSession::sendKeepalive() {
     if (m_channelId == 0 || !m_srtpSession || !m_srtpSession->isReady()) return;
 
     const uint8_t dummy = 0;
-    auto encrypted = m_srtpSession->encrypt(&dummy, 0, m_txSequence); // empty payload, tag only
+    auto encrypted = m_srtpSession->encrypt(&dummy, 0, m_txSequence, m_userId); // empty payload, tag only
     if (encrypted.empty()) return;
 
     VoicePacket pkt;
@@ -345,7 +355,7 @@ void VoiceSession::processReceivedPacket(const QByteArray& data) {
 
     // SRTP decrypt
     auto decrypted = m_srtpSession->decrypt(
-        pkt->payload.data(), pkt->payload.size(), pkt->sequence);
+        pkt->payload.data(), pkt->payload.size(), pkt->sequence, pkt->userId);
 
     if (decrypted.empty()) {
         qDebug() << "[RX] SRTP decrypt failed for seq=" << pkt->sequence;
@@ -360,6 +370,7 @@ void VoiceSession::processReceivedPacket(const QByteArray& data) {
         source->decoder.initialize();
     }
     source->channelId = pkt->channelId; // track which channel this source is on
+    source->lastPacket = std::chrono::steady_clock::now();
 
     source->jitterBuffer.push(pkt->sequence, pkt->timestamp, std::move(decrypted));
 }

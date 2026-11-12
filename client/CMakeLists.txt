@@ -44,6 +44,7 @@ set(SOURCES
     src/ui/admin/admin_panel.cpp
     src/ui/ops/ops_manager.cpp
     src/ui/ops/template_editor.cpp
+    src/ui/overlay/talk_overlay.cpp
     src/ui/settings_dialog.cpp
     src/ui/vu_meter.cpp
 )
@@ -72,6 +73,7 @@ set(HEADERS
     src/ui/admin/admin_panel.h
     src/ui/ops/ops_manager.h
     src/ui/ops/template_editor.h
+    src/ui/overlay/talk_overlay.h
     src/ui/settings_dialog.h
     src/ui/vu_meter.h
 )

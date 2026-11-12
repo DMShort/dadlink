@@ -39,6 +39,8 @@ public:
 
     /// Authenticate with a saved token.
     void authenticateToken(const QString& token);
+    /// Authenticate with the single-use ticket from the Discord browser login.
+    void authenticateDiscord(const QString& ticket, const QString& orgTag);
 
     /// Send a typed JSON message to the server.
     void sendMessage(const QString& type, const QJsonObject& payload = {});

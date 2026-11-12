@@ -23,23 +23,23 @@ bool SrtpSession::init(const DerivedKeys& keys) {
     return true;
 }
 
-std::vector<uint8_t> SrtpSession::encrypt(const uint8_t* plaintext, size_t len, uint64_t sequence) {
+std::vector<uint8_t> SrtpSession::encrypt(const uint8_t* plaintext, size_t len, uint64_t sequence, uint32_t sourceId) {
     if (!m_ready) return {};
-    return encryptWith(plaintext, len, sequence, m_current);
+    return encryptWith(plaintext, len, sequence, sourceId, m_current);
 }
 
-std::vector<uint8_t> SrtpSession::decrypt(const uint8_t* ciphertext, size_t len, uint64_t sequence) {
+std::vector<uint8_t> SrtpSession::decrypt(const uint8_t* ciphertext, size_t len, uint64_t sequence, uint32_t sourceId) {
     if (!m_ready) return {};
 
     // Try current key first
-    auto result = decryptWith(ciphertext, len, sequence, m_current);
+    auto result = decryptWith(ciphertext, len, sequence, sourceId, m_current);
     if (!result.empty()) return result;
 
     // Try previous key if within dual-key window
     if (m_previous.has_value()) {
         auto elapsed = std::chrono::steady_clock::now() - m_rotationTime;
         if (elapsed < DualKeyWindow) {
-            result = decryptWith(ciphertext, len, sequence, *m_previous);
+            result = decryptWith(ciphertext, len, sequence, sourceId, *m_previous);
             if (!result.empty()) {
                 qDebug() << "[SRTP] Decrypted with previous key (dual-key window)";
                 return result;
@@ -54,8 +54,8 @@ std::vector<uint8_t> SrtpSession::decrypt(const uint8_t* ciphertext, size_t len,
 }
 
 std::vector<uint8_t> SrtpSession::encryptWith(const uint8_t* plaintext, size_t len,
-                                               uint64_t sequence, const KeyMaterial& km) {
-    auto nonce = deriveNonce(sequence, km);
+                                               uint64_t sequence, uint32_t sourceId, const KeyMaterial& km) {
+    auto nonce = deriveNonce(sequence, sourceId, km);
 
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return {};
@@ -89,10 +89,10 @@ std::vector<uint8_t> SrtpSession::encryptWith(const uint8_t* plaintext, size_t l
 }
 
 std::vector<uint8_t> SrtpSession::decryptWith(const uint8_t* ciphertext, size_t len,
-                                               uint64_t sequence, const KeyMaterial& km) {
+                                               uint64_t sequence, uint32_t sourceId, const KeyMaterial& km) {
     if (len < static_cast<size_t>(GCM_TAG_SIZE)) return {};
 
-    auto nonce = deriveNonce(sequence, km);
+    auto nonce = deriveNonce(sequence, sourceId, km);
 
     size_t dataLen = len - GCM_TAG_SIZE;
     const uint8_t* tag = ciphertext + dataLen;
@@ -127,8 +127,14 @@ std::vector<uint8_t> SrtpSession::decryptWith(const uint8_t* ciphertext, size_t 
     return plaintext;
 }
 
-std::array<uint8_t, 12> SrtpSession::deriveNonce(uint64_t sequence, const KeyMaterial& km) const {
+std::array<uint8_t, 12> SrtpSession::deriveNonce(uint64_t sequence, uint32_t sourceId, const KeyMaterial& km) const {
     std::array<uint8_t, 12> nonce{};
+
+    // Speaker id in the first 4 bytes (big-endian) — must match server/src/crypto/srtp_session.rs
+    nonce[0] = static_cast<uint8_t>((sourceId >> 24) & 0xFF);
+    nonce[1] = static_cast<uint8_t>((sourceId >> 16) & 0xFF);
+    nonce[2] = static_cast<uint8_t>((sourceId >> 8) & 0xFF);
+    nonce[3] = static_cast<uint8_t>(sourceId & 0xFF);
 
     // Place sequence number in last 8 bytes (big-endian)
     nonce[4]  = static_cast<uint8_t>((sequence >> 56) & 0xFF);

@@ -43,6 +43,8 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 base64 = "0.22"
 sha2 = "0.10"
+# Discord OAuth (rustls so the slim Docker image needs no OpenSSL)
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 rand = "0.8"
 
 # Concurrent data structures

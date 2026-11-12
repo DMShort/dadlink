@@ -90,12 +90,14 @@ void AdminApi::listRoles(SuccessCallback onSuccess, ErrorCallback onError) {
 
 void AdminApi::createRole(const QString& name, int permissions, int priority,
                            const QString& color,
-                           SuccessCallback onSuccess, ErrorCallback onError) {
+                           SuccessCallback onSuccess, ErrorCallback onError,
+                           const QString& discordRoleId) {
     QJsonObject body;
     body["name"] = name;
     body["permissions"] = permissions;
     body["priority"] = priority;
     if (!color.isEmpty()) body["color"] = color;
+    if (!discordRoleId.trimmed().isEmpty()) body["discord_role_id"] = discordRoleId.trimmed();
     post("/admin/roles", body, onSuccess, onError);
 }
 

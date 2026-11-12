@@ -41,6 +41,8 @@ public:
 
 private slots:
     void onConnectClicked();
+    void onDiscordClicked();
+    void pollDiscord();
     void onRegisterClicked();
     void onConnected();
     void onDisconnected();
@@ -72,6 +74,17 @@ private:
     QCheckBox* m_rememberMe;
     QPushButton* m_connectBtn;
     QPushButton* m_registerBtn;
+    QPushButton* m_discordBtn = nullptr;
+
+    // Discord browser login
+    class QNetworkAccessManager* m_http = nullptr;
+    class QTimer* m_discordPoll = nullptr;
+    QString m_discordVerifier;   // secret kept in the app; only its SHA-256 goes to the browser
+    QString m_discordTicket;     // single-use ticket to redeem on the WebSocket
+    qint64 m_discordDeadline = 0;
+    bool m_discordPollInFlight = false;
+    void stopDiscord(const QString& error = QString());
+    QString httpBase() const;
     QProgressBar* m_progress;
     QLabel* m_statusLabel;
     QLabel* m_errorLabel;
