@@ -29,12 +29,14 @@ public:
 
     /// Encrypt a plaintext Opus payload (always uses current key).
     /// Returns ciphertext with appended 16-byte auth tag, or empty on failure.
-    std::vector<uint8_t> encrypt(const uint8_t* plaintext, size_t len, uint64_t sequence);
+    /// sourceId = the speaker's user id (our own id when sending). It is part of the nonce, so
+    /// two speakers using the same sequence number never reuse a key/nonce pair.
+    std::vector<uint8_t> encrypt(const uint8_t* plaintext, size_t len, uint64_t sequence, uint32_t sourceId);
 
     /// Decrypt a ciphertext (with appended auth tag) to recover the Opus payload.
     /// Tries current key first, then previous key if within dual-key window.
     /// Returns plaintext, or empty on authentication failure.
-    std::vector<uint8_t> decrypt(const uint8_t* ciphertext, size_t len, uint64_t sequence);
+    std::vector<uint8_t> decrypt(const uint8_t* ciphertext, size_t len, uint64_t sequence, uint32_t sourceId);
 
 private:
     struct KeyMaterial {
@@ -42,9 +44,9 @@ private:
         std::array<uint8_t, 14> salt{};
     };
 
-    std::array<uint8_t, 12> deriveNonce(uint64_t sequence, const KeyMaterial& km) const;
-    std::vector<uint8_t> encryptWith(const uint8_t* plaintext, size_t len, uint64_t sequence, const KeyMaterial& km);
-    std::vector<uint8_t> decryptWith(const uint8_t* ciphertext, size_t len, uint64_t sequence, const KeyMaterial& km);
+    std::array<uint8_t, 12> deriveNonce(uint64_t sequence, uint32_t sourceId, const KeyMaterial& km) const;
+    std::vector<uint8_t> encryptWith(const uint8_t* plaintext, size_t len, uint64_t sequence, uint32_t sourceId, const KeyMaterial& km);
+    std::vector<uint8_t> decryptWith(const uint8_t* ciphertext, size_t len, uint64_t sequence, uint32_t sourceId, const KeyMaterial& km);
 
     KeyMaterial m_current;
     std::optional<KeyMaterial> m_previous;

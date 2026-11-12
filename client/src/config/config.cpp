@@ -44,6 +44,22 @@ bool AppConfig::load(const QString& path) {
     if (root.contains("hotkeys"))       hotkeysFromJson(root["hotkeys"].toObject());
     if (root.contains("channel_audio")) channelAudioFromJson(root["channel_audio"].toObject());
     if (root.contains("ui"))            uiFromJson(root["ui"].toObject());
+    if (root.contains("overlay")) {
+        QJsonObject o = root["overlay"].toObject();
+        overlay.enabled  = o["enabled"].toBool(true);
+        overlay.corner   = o["corner"].toString("top-right");
+        overlay.offsetX  = o["offset_x"].toInt(24);
+        overlay.offsetY  = o["offset_y"].toInt(140);
+        overlay.screen   = o["screen"].toInt(0);
+        overlay.scale    = o["scale"].toDouble(1.0);
+        overlay.opacity  = o["opacity"].toDouble(0.85);
+        overlay.showIdle = o["show_idle"].toBool(false);
+    }
+    opNetHotkeys.clear();
+    if (root.contains("op_net_hotkeys")) {
+        QJsonObject o = root["op_net_hotkeys"].toObject();
+        for (auto it = o.constBegin(); it != o.constEnd(); ++it) opNetHotkeys[it.key()] = it.value().toString();
+    }
 
     return true;
 }
@@ -60,6 +76,19 @@ bool AppConfig::save(const QString& path) const {
     root["hotkeys"]       = hotkeysToJson();
     root["channel_audio"] = channelAudioToJson();
     root["ui"]            = uiToJson();
+    QJsonObject opKeys;
+    for (auto it = opNetHotkeys.constBegin(); it != opNetHotkeys.constEnd(); ++it) opKeys[it.key()] = it.value();
+    root["op_net_hotkeys"] = opKeys;
+    QJsonObject ov;
+    ov["enabled"]   = overlay.enabled;
+    ov["corner"]    = overlay.corner;
+    ov["offset_x"]  = overlay.offsetX;
+    ov["offset_y"]  = overlay.offsetY;
+    ov["screen"]    = overlay.screen;
+    ov["scale"]     = overlay.scale;
+    ov["opacity"]   = overlay.opacity;
+    ov["show_idle"] = overlay.showIdle;
+    root["overlay"] = ov;
 
     QJsonDocument doc(root);
 
@@ -143,6 +172,8 @@ QJsonObject AppConfig::channelAudioToJson() const {
         ch["priority"]  = it.value().priority;
         ch["muted"]     = it.value().muted;
         ch["open_mic"]  = it.value().openMic;
+        ch["pan"]       = static_cast<double>(it.value().pan);
+        ch["radio"]     = it.value().radioFilter;
         obj[QString::number(it.key())] = ch;
     }
     return obj;
@@ -224,6 +255,8 @@ void AppConfig::channelAudioFromJson(const QJsonObject& obj) {
         cfg.priority = ch["priority"].toInt(5);
         cfg.muted    = ch["muted"].toBool(false);
         cfg.openMic  = ch["open_mic"].toBool(false);
+        cfg.pan      = static_cast<float>(ch["pan"].toDouble(0.0));
+        cfg.radioFilter = ch["radio"].toBool(false);
         channelAudio[channelId] = cfg;
     }
 }

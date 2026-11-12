@@ -1,9 +1,18 @@
 #include "settings_dialog.h"
+#include <algorithm>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QSpinBox>
+#include <QSlider>
+#include "ui/overlay/talk_overlay.h"
+#include <QGuiApplication>
+#include <QScreen>
 #include "audio/audio_engine.h"
 #include "input/ptt_manager.h"
 #include "ui/channel_tree.h"
 #include "voice/voice_session.h"
 
+#include <cmath>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -29,7 +38,7 @@ SettingsDialog::SettingsDialog(AppConfig& config, AudioEngine* audioEngine,
 
 void SettingsDialog::setupUi() {
     setWindowTitle("Settings");
-    setMinimumWidth(450);
+    setMinimumWidth(720); // Channel Audio table has 6 columns
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
     auto* mainLayout = new QVBoxLayout(this);
@@ -40,6 +49,16 @@ void SettingsDialog::setupUi() {
     m_tabs->addTab(createHotkeyTab(), "Hotkeys");
     m_tabs->addTab(createChannelAudioTab(), "Channel Audio");
     m_tabs->addTab(createNetworkTab(), "Network");
+    const int overlayTab = m_tabs->addTab(createOverlayTab(), "Overlay");
+
+    // Preview the overlay while its tab is showing; always switch preview off on close
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this, overlayTab](int idx) {
+        if (m_overlay) m_overlay->setPreview(idx == overlayTab);
+    });
+    connect(this, &QDialog::finished, this, [this]() {
+        if (m_overlay) m_overlay->setPreview(false);
+        m_config.save();
+    });
     mainLayout->addWidget(m_tabs);
 
     auto* buttons = new QDialogButtonBox(
@@ -244,6 +263,14 @@ QWidget* SettingsDialog::createHotkeyTab() {
                     ++it;
             }
             m_config.hotkeys[key] = channelId;
+
+            // Op net: remember the binding by net name for future ops
+            if (m_opNetNames.contains(channelId)) {
+                for (auto it = m_config.opNetHotkeys.begin(); it != m_config.opNetHotkeys.end(); ) {
+                    if (it.value() == key) it = m_config.opNetHotkeys.erase(it); else ++it;
+                }
+                m_config.opNetHotkeys[m_opNetNames.value(channelId).toLower()] = key;
+            }
             loadHotkeyTable();
         });
         connect(m_pttManager, &PttManager::captureCancelled, this, [this]() { finishCapture(); });
@@ -262,8 +289,9 @@ QWidget* SettingsDialog::createChannelAudioTab() {
 
     // Info label
     auto* info = new QLabel(
-        "Set per-channel volume and priority. Higher priority channels (lower number) "
-        "will duck lower-priority channels when active.", this);
+        "Set per-channel volume, priority, stereo position and radio effect. Higher priority "
+        "channels (lower number) duck lower-priority channels when active. Placing nets left, "
+        "centre and right, and giving some the radio effect, lets you tell them apart by ear.", this);
     info->setWordWrap(true);
     info->setStyleSheet("padding: 4px; color: #ccc;");
     layout->addWidget(info);
@@ -272,15 +300,16 @@ QWidget* SettingsDialog::createChannelAudioTab() {
     auto* group = new QGroupBox("Channel Audio Settings", this);
     auto* groupLayout = new QVBoxLayout(group);
 
-    m_channelAudioTable = new QTableWidget(0, 4, this);
-    m_channelAudioTable->setHorizontalHeaderLabels({"Channel", "Volume", "Priority", "Muted"});
+    m_channelAudioTable = new QTableWidget(0, 6, this);
+    m_channelAudioTable->setHorizontalHeaderLabels({"Channel", "Volume", "Priority", "Muted", "Pan", "Radio"});
     m_channelAudioTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_channelAudioTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
-    m_channelAudioTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
-    m_channelAudioTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
-    m_channelAudioTable->setColumnWidth(1, 160);
-    m_channelAudioTable->setColumnWidth(2, 80);
-    m_channelAudioTable->setColumnWidth(3, 60);
+    for (int c = 1; c <= 5; ++c)
+        m_channelAudioTable->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Fixed);
+    m_channelAudioTable->setColumnWidth(1, 140);
+    m_channelAudioTable->setColumnWidth(2, 70);
+    m_channelAudioTable->setColumnWidth(3, 55);
+    m_channelAudioTable->setColumnWidth(4, 170);
+    m_channelAudioTable->setColumnWidth(5, 55);
     m_channelAudioTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_channelAudioTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_channelAudioTable->verticalHeader()->hide();
@@ -389,6 +418,53 @@ void SettingsDialog::loadChannelAudioTable() {
                 m_voiceSession->setChannelMuted(static_cast<uint32_t>(channelId), muted);
             }
         });
+
+        // Pan: slider -100..100 with L/C/R readout; snaps to centre near 0
+        auto* panContainer = new QWidget(this);
+        auto* panLayout = new QHBoxLayout(panContainer);
+        panLayout->setContentsMargins(4, 0, 4, 0);
+        auto* panSlider = new QSlider(Qt::Horizontal, this);
+        panSlider->setRange(-100, 100);
+        panSlider->setPageStep(50);
+        panSlider->setValue(static_cast<int>(std::lround(cfg.pan * 100)));
+        auto* panLabel = new QLabel(this);
+        panLabel->setMinimumWidth(34);
+        auto panText = [](int v) {
+            if (v == 0) return QStringLiteral("C");
+            return QStringLiteral("%1%2").arg(v < 0 ? "L" : "R").arg(std::abs(v));
+        };
+        panLabel->setText(panText(panSlider->value()));
+        panLayout->addWidget(panSlider, 1);
+        panLayout->addWidget(panLabel);
+        m_channelAudioTable->setCellWidget(row, 4, panContainer);
+
+        connect(panSlider, &QSlider::valueChanged, this, [this, channelId, panSlider, panLabel, panText](int val) {
+            if (val != 0 && std::abs(val) < 8) { panSlider->setValue(0); return; } // detent at centre
+            panLabel->setText(panText(val));
+            float pan = val / 100.0f;
+            m_config.channelAudio[channelId].pan = pan;
+            if (m_voiceSession) {
+                m_voiceSession->setChannelPan(static_cast<uint32_t>(channelId), pan);
+            }
+        });
+
+        // Radio effect checkbox
+        auto* radioCheck = new QCheckBox(this);
+        radioCheck->setChecked(cfg.radioFilter);
+        radioCheck->setToolTip("Comms-radio voice effect (band-pass + light distortion)");
+        auto* radioContainer = new QWidget(this);
+        auto* radioLayout = new QHBoxLayout(radioContainer);
+        radioLayout->addWidget(radioCheck);
+        radioLayout->setAlignment(Qt::AlignCenter);
+        radioLayout->setContentsMargins(0, 0, 0, 0);
+        m_channelAudioTable->setCellWidget(row, 5, radioContainer);
+
+        connect(radioCheck, &QCheckBox::toggled, this, [this, channelId](bool on) {
+            m_config.channelAudio[channelId].radioFilter = on;
+            if (m_voiceSession) {
+                m_voiceSession->setChannelRadioFilter(static_cast<uint32_t>(channelId), on);
+            }
+        });
     }
 }
 
@@ -471,6 +547,9 @@ void SettingsDialog::loadHotkeyTable() {
 
         connect(removeBtn, &QPushButton::clicked, this, [this, binding, channelId]() {
             m_config.hotkeys.remove(binding);
+            if (m_opNetNames.contains(channelId)) {
+                m_config.opNetHotkeys.remove(m_opNetNames.value(channelId).toLower());
+            }
             if (m_pttManager) {
                 m_pttManager->removeHotkey(channelId);
             }
@@ -490,6 +569,92 @@ void SettingsDialog::updateJoystickStatus() {
     int n = m_pttManager ? m_pttManager->joystickCount() : 0;
     m_joystickStatus->setText(n == 0 ? QStringLiteral("No joysticks detected")
                                      : QStringLiteral("%1 joystick/HOTAS device%2 detected").arg(n).arg(n == 1 ? "" : "s"));
+}
+
+QWidget* SettingsDialog::createOverlayTab() {
+    auto* widget = new QWidget(this);
+    auto* layout = new QVBoxLayout(widget);
+
+    auto* info = new QLabel(
+        "Shows who is talking, and on which net, on top of your game. It never takes clicks or focus. "
+        "<b>Star Citizen must be in Borderless or Windowed mode</b>: exclusive fullscreen draws over "
+        "every other window. Changes apply immediately; the overlay shows a preview while this tab is open.", this);
+    info->setWordWrap(true);
+    info->setStyleSheet("padding: 4px; color: #ccc;");
+    layout->addWidget(info);
+
+    auto* group = new QGroupBox("Overlay", this);
+    auto* form = new QFormLayout(group);
+    OverlayConfig& c = m_config.overlay;
+
+    auto* enabled = new QCheckBox("Show overlay", this);
+    enabled->setChecked(c.enabled);
+    form->addRow(enabled);
+
+    auto* corner = new QComboBox(this);
+    corner->addItem("Top left", "top-left");
+    corner->addItem("Top right", "top-right");
+    corner->addItem("Bottom left", "bottom-left");
+    corner->addItem("Bottom right", "bottom-right");
+    corner->setCurrentIndex(std::max(0, corner->findData(c.corner)));
+    form->addRow("Corner:", corner);
+
+    auto* screen = new QComboBox(this);
+    const auto screens = QGuiApplication::screens();
+    for (int i = 0; i < screens.size(); ++i) {
+        QRect g = screens[i]->geometry();
+        screen->addItem(QString("%1: %2 (%3×%4)").arg(i + 1).arg(screens[i]->name()).arg(g.width()).arg(g.height()), i);
+    }
+    screen->setCurrentIndex(std::clamp(c.screen, 0, std::max(0, int(screens.size()) - 1)));
+    form->addRow("Monitor:", screen);
+
+    auto* offX = new QSpinBox(this);
+    offX->setRange(0, 4000);
+    offX->setValue(c.offsetX);
+    offX->setSuffix(" px");
+    auto* offY = new QSpinBox(this);
+    offY->setRange(0, 4000);
+    offY->setValue(c.offsetY);
+    offY->setSuffix(" px");
+    auto* offRow = new QHBoxLayout();
+    offRow->addWidget(new QLabel("Across", this));
+    offRow->addWidget(offX);
+    offRow->addWidget(new QLabel("Down/up", this));
+    offRow->addWidget(offY);
+    form->addRow("Offset from corner:", offRow);
+
+    auto* scale = new QSlider(Qt::Horizontal, this);
+    scale->setRange(75, 200);
+    scale->setValue(int(c.scale * 100));
+    form->addRow("Size:", scale);
+
+    auto* opacity = new QSlider(Qt::Horizontal, this);
+    opacity->setRange(30, 100);
+    opacity->setValue(int(c.opacity * 100));
+    form->addRow("Opacity:", opacity);
+
+    auto* idle = new QCheckBox("Show a small tag when nobody is talking", this);
+    idle->setChecked(c.showIdle);
+    form->addRow(idle);
+
+    layout->addWidget(group);
+    layout->addStretch();
+
+    connect(enabled, &QCheckBox::toggled, this, [this](bool v) { m_config.overlay.enabled = v; applyOverlay(); });
+    connect(corner, &QComboBox::currentIndexChanged, this, [this, corner](int) {
+        m_config.overlay.corner = corner->currentData().toString(); applyOverlay(); });
+    connect(screen, &QComboBox::currentIndexChanged, this, [this, screen](int) {
+        m_config.overlay.screen = screen->currentData().toInt(); applyOverlay(); });
+    connect(offX, &QSpinBox::valueChanged, this, [this](int v) { m_config.overlay.offsetX = v; applyOverlay(); });
+    connect(offY, &QSpinBox::valueChanged, this, [this](int v) { m_config.overlay.offsetY = v; applyOverlay(); });
+    connect(scale, &QSlider::valueChanged, this, [this](int v) { m_config.overlay.scale = v / 100.0; applyOverlay(); });
+    connect(opacity, &QSlider::valueChanged, this, [this](int v) { m_config.overlay.opacity = v / 100.0; applyOverlay(); });
+    connect(idle, &QCheckBox::toggled, this, [this](bool v) { m_config.overlay.showIdle = v; applyOverlay(); });
+    return widget;
+}
+
+void SettingsDialog::applyOverlay() {
+    if (m_overlay) m_overlay->applyConfig(m_config.overlay);
 }
 
 void SettingsDialog::saveToConfig() {

@@ -202,6 +202,26 @@ void VoiceSession::setChannelMuted(uint32_t channelId, bool muted) {
     m_channelSettings[channelId].muted = muted;
 }
 
+std::vector<VoiceSession::ActiveSpeaker> VoiceSession::activeSpeakers(int windowMs) {
+    const auto cutoff = std::chrono::steady_clock::now() - std::chrono::milliseconds(windowMs);
+    std::vector<ActiveSpeaker> out;
+    std::lock_guard<std::mutex> lock(m_sourcesMutex);
+    for (const auto& [userId, src] : m_sources) {
+        if (src && src->lastPacket >= cutoff) out.push_back({userId, src->channelId});
+    }
+    return out;
+}
+
+void VoiceSession::setChannelPan(uint32_t channelId, float pan) {
+    std::lock_guard<std::mutex> lock(m_channelSettingsMutex);
+    m_channelSettings[channelId].pan = std::clamp(pan, -1.0f, 1.0f);
+}
+
+void VoiceSession::setChannelRadioFilter(uint32_t channelId, bool enabled) {
+    std::lock_guard<std::mutex> lock(m_channelSettingsMutex);
+    m_channelSettings[channelId].radioFilter = enabled;
+}
+
 void VoiceSession::removeChannelSettings(uint32_t channelId) {
     std::lock_guard<std::mutex> lock(m_channelSettingsMutex);
     m_channelSettings.erase(channelId);
@@ -240,7 +260,7 @@ void VoiceSession::onTransmitTimer() {
     auto encoded = m_opusCodec.encode(pcm, AudioEngine::FramesPerBuffer);
     if (encoded.empty()) { qDebug() << "[TX] Opus encode failed"; return; }
 
-    auto encrypted = m_srtpSession->encrypt(encoded.data(), encoded.size(), m_txSequence);
+    auto encrypted = m_srtpSession->encrypt(encoded.data(), encoded.size(), m_txSequence, m_userId);
     if (encrypted.empty()) { qDebug() << "[TX] SRTP encrypt failed"; return; }
 
     // Build the set of channels to transmit to this tick:
@@ -282,7 +302,7 @@ void VoiceSession::sendKeepalive() {
     if (m_channelId == 0 || !m_srtpSession || !m_srtpSession->isReady()) return;
 
     const uint8_t dummy = 0;
-    auto encrypted = m_srtpSession->encrypt(&dummy, 0, m_txSequence); // empty payload, tag only
+    auto encrypted = m_srtpSession->encrypt(&dummy, 0, m_txSequence, m_userId); // empty payload, tag only
     if (encrypted.empty()) return;
 
     VoicePacket pkt;
@@ -335,7 +355,7 @@ void VoiceSession::processReceivedPacket(const QByteArray& data) {
 
     // SRTP decrypt
     auto decrypted = m_srtpSession->decrypt(
-        pkt->payload.data(), pkt->payload.size(), pkt->sequence);
+        pkt->payload.data(), pkt->payload.size(), pkt->sequence, pkt->userId);
 
     if (decrypted.empty()) {
         qDebug() << "[RX] SRTP decrypt failed for seq=" << pkt->sequence;
@@ -350,6 +370,7 @@ void VoiceSession::processReceivedPacket(const QByteArray& data) {
         source->decoder.initialize();
     }
     source->channelId = pkt->channelId; // track which channel this source is on
+    source->lastPacket = std::chrono::steady_clock::now();
 
     source->jitterBuffer.push(pkt->sequence, pkt->timestamp, std::move(decrypted));
 }
@@ -357,7 +378,8 @@ void VoiceSession::processReceivedPacket(const QByteArray& data) {
 // --- Playback mixing (20ms timer) ---
 
 void VoiceSession::onPlaybackTimer() {
-    float mixed[AudioEngine::FramesPerBuffer];
+    constexpr int N = AudioEngine::FramesPerBuffer;
+    float mixed[N * AudioEngine::PlaybackChannels]; // interleaved L/R
     std::memset(mixed, 0, sizeof(mixed));
     bool hasAudio = false;
 
@@ -399,6 +421,11 @@ void VoiceSession::onPlaybackTimer() {
 
             if (ds.decoded <= 0) continue;
 
+            // Radio effect is per speaker so its filter state stays continuous
+            if (settingsIt != m_channelSettings.end() && settingsIt->second.radioFilter) {
+                source->radio.process(ds.pcm, std::min(ds.decoded, N));
+            }
+
             // Track highest priority among active sources
             int priority = 5; // default
             if (settingsIt != m_channelSettings.end()) {
@@ -418,11 +445,13 @@ void VoiceSession::onPlaybackTimer() {
         for (auto& ds : decoded_sources) {
             float volume = 1.0f;
             int priority = 5;
+            float pan = 0.0f;
 
             auto settingsIt = m_channelSettings.find(ds.channelId);
             if (settingsIt != m_channelSettings.end()) {
                 volume = settingsIt->second.volume;
                 priority = settingsIt->second.priority;
+                pan = settingsIt->second.pan;
             }
 
             // Apply ducking: if a higher-priority channel is active, duck this one
@@ -430,9 +459,14 @@ void VoiceSession::onPlaybackTimer() {
                 volume *= duckLvl;
             }
 
-            // Mix with volume applied
-            for (int i = 0; i < ds.decoded && i < AudioEngine::FramesPerBuffer; ++i) {
-                mixed[i] += ds.pcm[i] * volume;
+            // Balance-law pan: centre keeps full level in both ears (same loudness as
+            // the old mono mix); moving one way fades the opposite ear to silence.
+            const float gainL = volume * std::min(1.0f, 1.0f - pan);
+            const float gainR = volume * std::min(1.0f, 1.0f + pan);
+
+            for (int i = 0; i < ds.decoded && i < N; ++i) {
+                mixed[i * 2]     += ds.pcm[i] * gainL;
+                mixed[i * 2 + 1] += ds.pcm[i] * gainR;
             }
             hasAudio = true;
         }
@@ -440,9 +474,9 @@ void VoiceSession::onPlaybackTimer() {
 
     if (hasAudio) {
         // Hard clip to [-1, 1]
-        for (int i = 0; i < AudioEngine::FramesPerBuffer; ++i) {
+        for (int i = 0; i < N * AudioEngine::PlaybackChannels; ++i) {
             mixed[i] = std::clamp(mixed[i], -1.0f, 1.0f);
         }
-        m_audioEngine.writePlayback(mixed, AudioEngine::FramesPerBuffer);
+        m_audioEngine.writePlayback(mixed, N);
     }
 }

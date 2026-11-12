@@ -8,6 +8,18 @@
 #include <QMessageBox>
 #include <QSslCertificate>
 #include <QJsonArray>
+#include <QCryptographicHash>
+#include <QDateTime>
+#include <QDesktopServices>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QRandomGenerator>
+#include <QSslConfiguration>
+#include <QTimer>
+#include <QUrlQuery>
 
 LoginDialog::LoginDialog(AppConfig& config, WebSocketClient* wsClient, QWidget* parent)
     : QDialog(parent)
@@ -74,6 +86,14 @@ void LoginDialog::setupUi() {
 
     mainLayout->addWidget(credGroup);
 
+    // Discord login (server must have it enabled; see server config [discord])
+    m_discordBtn = new QPushButton("Log in with Discord", this);
+    m_discordBtn->setToolTip("Opens your browser to sign in with Discord. No DadLink password needed.");
+    m_discordBtn->setStyleSheet("QPushButton { background: #5865F2; color: white; font-weight: bold; padding: 6px; border-radius: 4px; }"
+                                "QPushButton:disabled { background: #3a3f6b; color: #aaa; }");
+    m_discordBtn->setEnabled(false);
+    mainLayout->addWidget(m_discordBtn);
+
     // Status and progress
     m_statusLabel = new QLabel(this);
     m_statusLabel->setAlignment(Qt::AlignCenter);
@@ -120,6 +140,12 @@ void LoginDialog::setupUi() {
 
     connect(m_connectBtn,  &QPushButton::clicked, this, &LoginDialog::onConnectClicked);
     connect(m_registerBtn, &QPushButton::clicked, this, &LoginDialog::onRegisterClicked);
+    connect(m_discordBtn, &QPushButton::clicked, this, &LoginDialog::onDiscordClicked);
+
+    m_http = new QNetworkAccessManager(this);
+    m_discordPoll = new QTimer(this);
+    m_discordPoll->setInterval(1500);
+    connect(m_discordPoll, &QTimer::timeout, this, &LoginDialog::pollDiscord);
 
     // Enter key triggers connect
     connect(m_password, &QLineEdit::returnPressed, this, [this]() {
@@ -155,6 +181,11 @@ void LoginDialog::validateInputs() {
               && !m_username->text().trimmed().isEmpty()
               && !m_password->text().isEmpty();
     m_connectBtn->setEnabled(valid);
+    // Discord login needs only the server and org
+    if (m_discordBtn && !(m_discordPoll && m_discordPoll->isActive())) {
+        m_discordBtn->setEnabled(!m_serverAddress->text().trimmed().isEmpty()
+                                 && !m_orgTag->text().trimmed().isEmpty());
+    }
 }
 
 void LoginDialog::onConnectClicked() {
@@ -188,6 +219,13 @@ void LoginDialog::onDisconnected() {
 }
 
 void LoginDialog::onChallengeReceived(const QStringList& methods) {
+    if (!m_discordTicket.isEmpty()) {
+        const QString ticket = m_discordTicket;
+        m_discordTicket.clear(); // single use
+        showStatus("Signing in with Discord...");
+        m_wsClient->authenticateDiscord(ticket, m_orgTag->text().trimmed());
+        return;
+    }
     if (!methods.contains("password")) {
         showError("Server does not support password authentication.");
         m_progress->hide();
@@ -338,6 +376,7 @@ void LoginDialog::setFormEnabled(bool enabled) {
     m_rememberMe->setEnabled(enabled);
     m_connectBtn->setEnabled(enabled);
     m_registerBtn->setEnabled(enabled);
+    if (m_discordBtn) m_discordBtn->setEnabled(enabled);
 }
 
 void LoginDialog::showError(const QString& message) {
@@ -347,4 +386,115 @@ void LoginDialog::showError(const QString& message) {
 
 void LoginDialog::showStatus(const QString& message) {
     m_statusLabel->setText(message);
+}
+
+// --- Discord login ---
+
+QString LoginDialog::httpBase() const {
+    return QString("%1://%2:%3").arg(m_useTls->isChecked() ? "https" : "http",
+                                     m_serverAddress->text().trimmed())
+        .arg(m_serverPort->value());
+}
+
+void LoginDialog::onDiscordClicked() {
+    if (m_discordPoll->isActive()) { // second click = cancel
+        stopDiscord("Discord login cancelled.");
+        return;
+    }
+    m_errorLabel->hide();
+    saveConfigFromForm();
+
+    // PKCE-style: the browser only sees sha256(verifier); polling needs the verifier itself
+    QByteArray raw(32, Qt::Uninitialized);
+    for (int i = 0; i < raw.size(); ++i) raw[i] = char(QRandomGenerator::system()->bounded(256));
+    m_discordVerifier = QString::fromLatin1(raw.toHex());
+    const QString challenge = QString::fromLatin1(
+        QCryptographicHash::hash(m_discordVerifier.toLatin1(), QCryptographicHash::Sha256).toHex());
+
+    QUrl url(httpBase() + "/auth/discord/start");
+    QUrlQuery q;
+    q.addQueryItem("org", m_orgTag->text().trimmed());
+    q.addQueryItem("challenge", challenge);
+    url.setQuery(q);
+
+    if (!QDesktopServices::openUrl(url)) {
+        stopDiscord("Couldn't open your browser.");
+        return;
+    }
+    m_discordDeadline = QDateTime::currentMSecsSinceEpoch() + 5 * 60 * 1000;
+    m_discordPoll->start();
+    m_discordBtn->setText("Waiting for Discord… (click to cancel)");
+    m_connectBtn->setEnabled(false);
+    m_progress->show();
+    showStatus("Finish signing in in your browser.");
+}
+
+void LoginDialog::pollDiscord() {
+    if (m_discordPollInFlight) return;
+    if (QDateTime::currentMSecsSinceEpoch() > m_discordDeadline) {
+        stopDiscord("Discord login timed out. Please try again.");
+        return;
+    }
+
+    QUrl url(httpBase() + "/auth/discord/poll");
+    QUrlQuery q;
+    q.addQueryItem("verifier", m_discordVerifier);
+    url.setQuery(q);
+    QNetworkRequest req(url);
+    if (m_useTls->isChecked()) {
+        // Same trust model as the WebSocket: self-signed allowed, checked against the pinned fingerprint
+        QSslConfiguration ssl = QSslConfiguration::defaultConfiguration();
+        ssl.setPeerVerifyMode(QSslSocket::VerifyNone);
+        req.setSslConfiguration(ssl);
+    }
+
+    m_discordPollInFlight = true;
+    QNetworkReply* reply = m_http->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_discordPollInFlight = false;
+        if (!m_discordPoll->isActive()) return; // cancelled meanwhile
+
+        const QString pinned = m_config.server.tlsPinnedCerts.value(m_serverAddress->text().trimmed());
+        if (m_useTls->isChecked() && !pinned.isEmpty()) {
+            QString fp = QString(reply->sslConfiguration().peerCertificate().digest(QCryptographicHash::Sha256).toHex());
+            if (!fp.isEmpty() && fp.compare(pinned, Qt::CaseInsensitive) != 0) {
+                stopDiscord("Server certificate changed. Refusing Discord login.");
+                return;
+            }
+        }
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError && status == 0) return; // network blip: keep polling
+        if (status == 404) {
+            stopDiscord("This server doesn't have Discord login enabled.");
+            return;
+        }
+        QJsonObject o = QJsonDocument::fromJson(reply->readAll()).object();
+        const QString st = o["status"].toString();
+        if (st == "pending") return;
+        if (st == "ok") {
+            m_discordTicket = o["ticket"].toString();
+            m_discordPoll->stop();
+            m_discordBtn->setText("Log in with Discord");
+            showStatus("Signed in with Discord. Connecting...");
+            setFormEnabled(false);
+            QString pinnedFp = m_config.server.tlsPinnedCerts.value(m_config.server.address);
+            m_wsClient->setPinnedCertFingerprint(pinnedFp);
+            m_wsClient->connectToServer(m_config.server.address, m_config.server.port, m_config.server.useTls);
+            return;
+        }
+        stopDiscord(o["reason"].toString("Discord login failed."));
+    });
+}
+
+void LoginDialog::stopDiscord(const QString& error) {
+    m_discordPoll->stop();
+    m_discordVerifier.clear();
+    m_discordTicket.clear();
+    m_discordBtn->setText("Log in with Discord");
+    m_progress->hide();
+    showStatus("");
+    validateInputs();
+    if (!error.isEmpty()) showError(error);
 }

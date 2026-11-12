@@ -92,6 +92,15 @@ impl ConnectionManager {
         }
     }
 
+    /// All connected user IDs in an org.
+    pub fn users_in_org(&self, org_id: i32) -> Vec<i32> {
+        self.connections
+            .iter()
+            .filter(|e| e.value().org_id == org_id)
+            .map(|e| *e.key())
+            .collect()
+    }
+
     /// Get all user IDs in a channel.
     pub fn users_in_channel(&self, channel_id: i32) -> Vec<i32> {
         self.connections

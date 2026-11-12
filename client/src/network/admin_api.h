@@ -44,7 +44,8 @@ public:
     void listRoles(SuccessCallback onSuccess, ErrorCallback onError);
     void createRole(const QString& name, int permissions, int priority,
                     const QString& color,
-                    SuccessCallback onSuccess, ErrorCallback onError);
+                    SuccessCallback onSuccess, ErrorCallback onError,
+                    const QString& discordRoleId = QString());
     void updateRole(int roleId, const QJsonObject& fields,
                     SuccessCallback onSuccess, ErrorCallback onError);
     void deleteRole(int roleId, SuccessCallback onSuccess, ErrorCallback onError);
@@ -55,6 +56,16 @@ public:
     void listInvites(SuccessCallback onSuccess, ErrorCallback onError);
     void createInvite(int maxUses, int expiresInHours, SuccessCallback onSuccess, ErrorCallback onError);
     void revokeInvite(const QString& code, SuccessCallback onSuccess, ErrorCallback onError);
+
+    // --- Ops (Admin or Op Leader) ---
+    void listOpRoles(SuccessCallback onSuccess, ErrorCallback onError);
+    void listOpTemplates(SuccessCallback onSuccess, ErrorCallback onError);
+    void createOpTemplate(const QJsonObject& tmpl, SuccessCallback onSuccess, ErrorCallback onError);
+    void updateOpTemplate(int templateId, const QJsonObject& tmpl, SuccessCallback onSuccess, ErrorCallback onError);
+    void deleteOpTemplate(int templateId, SuccessCallback onSuccess, ErrorCallback onError);
+    void listOps(SuccessCallback onSuccess, ErrorCallback onError);
+    void startOp(int templateId, const QString& name, SuccessCallback onSuccess, ErrorCallback onError);
+    void endOp(int opId, SuccessCallback onSuccess, ErrorCallback onError);
 
     // --- Audit ---
     void getAuditLog(int limit, int offset, SuccessCallback onSuccess, ErrorCallback onError);
