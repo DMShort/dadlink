@@ -108,6 +108,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(WIN32)
     # dinput8 + dxguid: joystick/HOTAS PTT (input/joystick_input.cpp)
     target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 dinput8 dxguid)
+    # windows.h defines min/max macros that break std::min/std::max/std::clamp
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX)
     # Set Windows subsystem (GUI app, no console in release)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         WIN32_EXECUTABLE $<CONFIG:Release>
